@@ -31,7 +31,7 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-Tested against `charts-utils` commit `1806a4d` (2026-09-17).
+Tested against `charts-utils` commit `ba2aa16` (2026-10-06).
 
 ## Environment
 
