@@ -30,15 +30,6 @@ The NumPy reference correlator is also used to cross-check Kotekan output:
 both compute integer sums, so they must agree exactly. This pins down the
 baseline indexing and conjugation conventions.
 
-## Data sources
-
-| Source | Type | Use |
-|--------|------|-----|
-| `corr_24h_0914` (JP) | Real correlations, 10.24 s cadence, few working antennas | Demonstration only |
-| `16_09_2026Fernando_corr` (Fernando) | Simulated correlation snapshots, 64 antennas | Test bench |
-| 10-TB Trillium campaign, runs S1–S5 (Fernando) | Simulated baseband + correlations | RFI (S4) and mixed sky + RFI scenes (S5) |
-| Own simulations | CPU tier or `charts_sim.py` | Controlled scenarios with known ground truth |
-
 ## Dependencies
 
 ### charts-utils (required)
@@ -72,7 +63,8 @@ requires a compiled Kotekan binary (path passed with `--kotekan-bin`).
 
 ## Environment
 
-Developed on Trillium (Digital Research Alliance of Canada / SciNet).
+Developed and tested on Trillium (Digital Research Alliance of Canada / SciNet).
+On other systems, replace `debugjob` / `sbatch` with the local scheduler.
 
 - Light tests and CPU-tier work on login nodes; heavier runs via `debugjob`.
 - Baseband generation and Kotekan correlation on GPU nodes via Slurm.
@@ -85,21 +77,28 @@ Developed on Trillium (Digital Research Alliance of Canada / SciNet).
 ```
 scripts/
   01_inspect.py              # dataset diagnostics (format, antennas, frames)
-  02_snapshot_view.py        # per-source snapshot visualization
-  03_validate_mvdr.py        # MVDR validation on simulated data with ground truth
-  04_saturation_analysis.py  # effect of ADC saturation on calibration and MVDR
-  05_mvdr_real.py            # MVDR on real observations (configurable window)
-  06_fitburst_inject.py      # synthetic FRB injection into real data
-  07_paper_figures.py        # figures for memos and thesis
-charts_mvdr/                 # shared package (planned)
-  io_baseband.py             # int4 unpacking and baseband frame reader
-  correlator.py              # NumPy reference correlator
-  sim_cpu.py                 # analytic and voltage-level CPU simulations
-  beamforming.py             # DFT and MVDR weights
+  02_snapshot_view.py        # per-source snapshot visualization (in progress)
 legacy/                      # early exploratory scripts, kept for reference
 ```
 
-Status: `01` done, `02` in progress, `03`–`07` and `charts_mvdr/` planned.
+## Roadmap
+
+Planned scripts:
+
+- `03_validate_mvdr.py`: MVDR validation on simulated data with known ground truth.
+- `04_saturation_analysis.py`: effect of ADC saturation on calibration and MVDR.
+- `05_mvdr_real.py`: MVDR on real observations with a configurable window.
+- `06_fitburst_inject.py`: synthetic FRB injection into real data.
+- `07_paper_figures.py`: figures for memos and reports.
+
+Planned shared package (`charts_mvdr/`), so that scripts do not duplicate code:
+
+- Baseband I/O: 4-bit complex unpacking and frame reader.
+- NumPy reference correlator.
+- CPU-tier simulations (analytic and voltage-level).
+- DFT and MVDR beamformer weights.
+
+Longer term: port the beamformer to the real-time correlator pipeline.
 
 ## Usage
 
@@ -155,8 +154,8 @@ Raw data, intermediate products (`.npy`) and figures are excluded via
   dump per frame; the production correlator integrates 10.24 s.
 - Frequency grid: 0.3 MHz channels starting at 300 MHz; each dump holds 336
   of the 672 channels.
-- Simulated array geometry: 8 × 8 grid, 0.6 m spacing (to be replaced by the
-  surveyed CHARTS-64 layout after deployment).
+- Array geometry is taken from `charts_constants` or from the dataset metadata;
+  no layout is hard-coded in the scripts.
 
 ## References
 
