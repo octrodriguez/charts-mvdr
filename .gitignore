@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data and intermediate products
+*.bin
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+outputs/
+
+# Figures (regenerable from scripts)
+*.png
+*.pdf
+
+# HPC logs
+slurm-*.out
+*.log
+
+# Editor / OS
+.vscode/
+.DS_Store
+
+# Local helpers
+charts_utils_bundle_*.md
