@@ -45,11 +45,17 @@ Developed on Trillium (Digital Research Alliance of Canada / SciNet).
 
 ```
 scripts/
-  01_inspect.py         # dataset diagnostics (format, antennas, frames)
-  02_snapshot_view.py   # per-source snapshot visualization
-  03_validate_mvdr.py   # (planned) MVDR validation on simulated data
-legacy/                 # early exploratory scripts, kept for reference
+  01_inspect.py              # dataset diagnostics (format, antennas, frames)
+  02_snapshot_view.py        # per-source snapshot visualization
+  03_validate_mvdr.py        # MVDR validation on simulated data with ground truth
+  04_saturation_analysis.py  # effect of ADC saturation on calibration and MVDR
+  05_mvdr_real.py            # MVDR on real observations (configurable window)
+  06_fitburst_inject.py      # synthetic FRB injection into real data
+  07_paper_figures.py        # figures for memos and thesis
+legacy/                      # early exploratory scripts, kept for reference
 ```
+
+Status: `01` done, `02` in progress, `03`-`07` planned.
 
 ## Usage
 
