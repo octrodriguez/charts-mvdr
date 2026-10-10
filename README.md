@@ -166,4 +166,4 @@ Raw data, intermediate products (`.npy`) and figures are excluded via
 ## Author
 
 Octavio Rodríguez ([@octrodriguez](https://github.com/octrodriguez)) —
-CHARTS team, Universidad de Chile.
+CHARTS team, AstroLab.
