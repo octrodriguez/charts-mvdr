@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charts-mvdr"
+version = "0.1.0"
+description = "MVDR beamforming for RFI mitigation in CHARTS"
+requires-python = ">=3.10"
+dependencies = ["numpy", "h5py"]
+
+[tool.setuptools.packages.find]
+include = ["charts_mvdr*"]
