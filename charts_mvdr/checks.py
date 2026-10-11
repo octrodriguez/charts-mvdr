@@ -37,6 +37,13 @@ def _grade(value: float, warn: float, fail: float) -> Status:
         return Status.WARN
     return Status.FAIL
 
+def _grade_high(value: float, warn: float, fail: float) -> Status:
+    """Higher is better: PASS above warn, WARN above fail, FAIL otherwise."""
+    if value > warn:
+        return Status.PASS
+    if value > fail:
+        return Status.WARN
+    return Status.FAIL
 
 def check_narrowband(pos_x, pos_y, channel_width_hz: float,
                      warn: float = 0.05, fail: float = 0.2) -> CheckResult:
@@ -78,6 +85,53 @@ def check_sample_support(num_samples: int, num_ant: int,
         details={"rho": rho, "K": K, "N": N},
     )
 
+
+def check_source_count(R: np.ndarray, expected: int | None = None,
+                       threshold_factor: float = 3.0, channel=None) -> CheckResult:
+    """#3 Eigenvalues above the noise floor (one per mutually incoherent source).
+
+    Coherent sources collapse into a single eigenvalue. Without an expected
+    count the result is informational (N/A): coherence cannot be inferred.
+    """
+    ev = np.linalg.eigvalsh(R)[::-1]
+    floor = float(np.median(ev))
+    n_above = int(np.sum(ev > threshold_factor * floor))
+    name = "source_count" if channel is None else f"source_count[{channel}]"
+    lead = ", ".join(f"{x:.3g}" for x in ev[:max(n_above + 1, 2)])
+    note = f"leading eigenvalues: {lead}; floor (median) = {floor:.3g}"
+    if expected is None:
+        status = Status.NA
+        threshold = f"> {threshold_factor} x median (no expected count)"
+    else:
+        threshold = f"expected {expected}"
+        if n_above == expected:
+            status = Status.PASS
+        elif n_above < expected:
+            status = Status.FAIL
+            note += "; fewer than expected: coherent or undetectable sources"
+        else:
+            status = Status.WARN
+            note += "; more than expected: unmodeled source or non-white noise"
+    return CheckResult(name=name, status=status, value=n_above, threshold=threshold,
+                       note=note, details={"eigenvalues": ev, "floor": floor})
+
+
+def check_conditioning(R: np.ndarray, warn: float = 0.3, fail: float = 0.05,
+                       channel=None) -> CheckResult:
+    """#8 Smallest eigenvalue relative to the noise floor (need for diagonal loading)."""
+    ev = np.linalg.eigvalsh(R)  # ascending
+    floor = float(np.median(ev))
+    ratio = float(ev[0] / floor)
+    name = "conditioning" if channel is None else f"conditioning[{channel}]"
+    return CheckResult(
+        name=name,
+        status=_grade_high(ratio, warn, fail),
+        value=ratio,
+        threshold=f"lambda_min/median > {warn} (WARN > {fail})",
+        note=f"condition number = {ev[-1] / ev[0]:.3g}; "
+             f"WARN/FAIL suggests diagonal loading",
+        details={"lambda_min": float(ev[0]), "lambda_max": float(ev[-1]), "floor": floor},
+    )
 
 def format_results(results: list[CheckResult]) -> str:
     """Plain-text table of check results."""
