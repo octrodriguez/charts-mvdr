@@ -195,6 +195,28 @@ def check_antenna_health(R: np.ndarray, low: float = 0.5, high: float = 2.0,
         details={"ratio": ratio, "outliers": outliers, "dead": dead},
     )
 
+def check_saturation(Vc: np.ndarray, rail: int = 7, warn: float = 1e-3, fail: float = 1e-2,
+                     channel=None) -> CheckResult:
+    """#6 Linearity: fraction of quantized components at the rails (|x| >= rail).
+
+    Vc holds the 4-bit complex voltages of one channel, shape (time, antenna).
+    Also reports samples at -8 (outside the symmetric [-7, 7] F-engine range)
+    and the quantization noise relative to the per-component variance.
+    """
+    comps = np.concatenate([Vc.real.ravel(), Vc.imag.ravel()])
+    frac = float(np.mean(np.abs(comps) >= rail))
+    n_m8 = int(np.sum(comps <= -8))
+    var = float(np.var(comps))
+    q_ratio = (1.0 / 12.0) / var if var > 0 else float("nan")
+    name = "saturation" if channel is None else f"saturation[{channel}]"
+    return CheckResult(
+        name=name, status=_grade(frac, warn, fail), value=frac,
+        threshold=f"fraction at |x| >= {rail} < {warn:g} (WARN < {fail:g})",
+        note=f"std per component = {np.sqrt(var):.2f} LSB; quantization noise = "
+             f"{100 * q_ratio:.1f}% of variance; samples at -8: {n_m8}",
+        details={"fraction": frac, "n_minus8": n_m8, "std": float(np.sqrt(var))},
+    )
+
 
 def format_results(results: list[CheckResult]) -> str:
     """Plain-text table of check results."""
