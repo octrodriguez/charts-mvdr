@@ -5,15 +5,16 @@ Provides two levels of simulation that produce the same covariance cube
 
 * ``analytic_covariance``: exact ensemble covariance (no estimation noise,
   no quantization). Used to test beamformer algebra in isolation.
-* ``simulate_voltages`` + ``sample_covariance``: complex baseband samples
-  with independent complex Gaussian sources, optional per-antenna gains and
-  optional 4-bit quantization, then correlated with a NumPy estimator.
+* ``simulate_voltages``: complex baseband samples with independent complex
+  Gaussian sources, optional per-antenna gains and optional 4-bit
+  quantization. The output layout (time, freq, antenna) is the same as
+  ``data_io.read_baseband_frame``, so simulated and generator frames go
+  through the same code (``np_correlator.correlate``, ``checks``).
 
 Conventions
 -----------
-* Steering vector: ``a_n = exp(-2j*pi*f*(l*x_n + m*y_n)/c)``, unnormalized
-  (``|a_n| = 1``, ``||a||^2 = N``). Same convention as ``beamforming.py``,
-  verified on simulated data (DFT image of persistent RFI, channel 94).
+* Steering vectors come from ``beamforming.steering_vectors``:
+  ``a_n = exp(-2j*pi*f*(l*x_n + m*y_n)/c)``, unnormalized (``||a||^2 = N``).
 * Covariance: ``R = E[x x^H]``, i.e. ``R[i, j] = E[x_i conj(x_j)]``.
 * Source power ``power`` is the complex variance ``E|s|^2``. Noise is
   specified by ``noise_sigma``, the standard deviation per real component,
@@ -33,7 +34,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 
-C_LIGHT = 299_792_458.0
+from charts_mvdr.beamforming import C_LIGHT, steering_vectors
 
 SourceModel = Literal["gaussian", "tone"]
 ClipMode = Literal["symmetric", "asymmetric"]
@@ -54,11 +55,14 @@ def grid_positions(nx: int = 8, ny: int = 8, spacing_m: float = 0.6) -> np.ndarr
     return xy - xy.mean(axis=0)
 
 
-def steering_vector(freq_hz: float, l: float, m: float,
-                    positions: np.ndarray) -> np.ndarray:
-    """Unnormalized steering vector, shape (N,)."""
-    phase = -2j * np.pi * freq_hz * (l * positions[:, 0] + m * positions[:, 1]) / C_LIGHT
-    return np.exp(phase)
+def positions_from_meta(meta: dict) -> np.ndarray:
+    """Antenna positions (N, 2) from ``data_io.read_window_meta``."""
+    return np.column_stack([meta["antenna_pos_x_m"], meta["antenna_pos_y_m"]]).astype(float)
+
+
+def steer(freq_hz: float, l: float, m: float, positions: np.ndarray) -> np.ndarray:
+    """Single steering vector, shape (N,); thin wrapper of ``steering_vectors``."""
+    return steering_vectors(l, m, freq_hz, positions[:, 0], positions[:, 1])[0]
 
 
 def grating_lobes(freq_hz: float, l: float, m: float, spacing_m: float,
@@ -143,7 +147,7 @@ def _source_terms(scn: Scenario, ifreq: int, sources: Sequence[Source]) -> np.nd
     R = np.zeros((n, n), dtype=complex)
     a_eff = np.zeros(n, dtype=complex)  # coherent sum of tone sources
     for s in sources:
-        a = g * steering_vector(f, s.l, s.m, scn.positions)
+        a = g * steer(f, s.l, s.m, scn.positions)
         p = s.power_at(ifreq)
         if s.model == "gaussian":
             R += p * np.outer(a, a.conj())
@@ -197,37 +201,28 @@ def simulate_voltages(scn: Scenario, n_samples: int,
                       rng: np.random.Generator | int | None = None,
                       quantize: ClipMode | None = None,
                       dtype=np.complex64) -> np.ndarray:
-    """Complex baseband samples, shape (F, K, N).
+    """Complex baseband samples, shape (time, freq, antenna) = (K, F, N).
 
-    Gaussian sources are independent per sample and per frequency; tone
-    sources are a constant phasor over the K samples.
+    Same layout as ``data_io.read_baseband_frame``. Gaussian sources are
+    independent per sample and per frequency; tone sources are a constant
+    phasor over the K samples.
     """
     rng = np.random.default_rng(rng)
     F, N, K = scn.freqs_hz.size, scn.n_ant, n_samples
-    x = np.empty((F, K, N), dtype=dtype)
+    x = np.empty((K, F, N), dtype=dtype)
     for i, f in enumerate(scn.freqs_hz):
         g = scn.gain_at(i)
         xi = _cn(rng, (K, N), 2.0 * scn.noise_sigma**2, dtype)
         for s in scn.sources:
-            a = (g * steering_vector(f, s.l, s.m, scn.positions)).astype(dtype)
+            a = (g * steer(f, s.l, s.m, scn.positions)).astype(dtype)
             p = s.power_at(i)
             if s.model == "gaussian":
                 sig = _cn(rng, (K, 1), p, dtype)
             else:
                 sig = np.full((K, 1), np.sqrt(p) * np.exp(1j * s.phase), dtype=dtype)
             xi += sig * a[None, :]
-        x[i] = quantize_4bit(xi, quantize) if quantize else xi
+        x[:, i, :] = quantize_4bit(xi, quantize) if quantize else xi
     return x
-
-
-def sample_covariance(x: np.ndarray) -> np.ndarray:
-    """R_hat[f, i, j] = (1/K) sum_k x[f,k,i] conj(x[f,k,j]); x shape (F, K, N).
-
-    Independent of ``np_correlator`` on purpose, so both can be cross-checked.
-    """
-    K = x.shape[1]
-    xc = x.astype(np.complex128)
-    return np.einsum("fki,fkj->fij", xc, xc.conj()) / K
 
 
 # ---------------------------------------------------------------------------
