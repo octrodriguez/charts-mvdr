@@ -34,6 +34,10 @@ def parse_args():
     p.add_argument("--num-freq", type=int, default=None)
     p.add_argument("--num-ant", type=int, default=None)
     p.add_argument("--verbose", action="store_true", help="print every per-channel result")
+    p.add_argument("--look", type=float, nargs=2, default=None, metavar=("L", "M"),
+                   help="look direction for the spatial-separation check")
+    p.add_argument("--interferer", type=float, nargs=2, action="append", default=[],
+                   metavar=("L", "M"), help="known interferer direction (repeatable)")
     return p.parse_args()
 
 
@@ -85,14 +89,20 @@ def main():
 
     R = correlate(V[:, chans, :], normalize=True)
     per_channel = []
+    x, y, fr = meta["antenna_pos_x_m"], meta["antenna_pos_y_m"], meta["frequencies_mhz"]
     for c, Rc in zip(chans, R):
+        sc = ck.check_source_count(Rc, expected=expected.get(c, args.expected), channel=c)
         per_channel += [
-            ck.check_source_count(Rc, expected=expected.get(c, args.expected), channel=c),
+            sc,
+            ck.check_degrees_of_freedom(sc.value, num_ant, channel=c),
             ck.check_noise_correlation(Rc, K, channel=c),
             ck.check_antenna_health(Rc, channel=c),
             ck.check_saturation(V[:, c, :], channel=c),
             ck.check_conditioning(Rc, channel=c),
         ]
+        if args.look is not None:
+            per_channel.append(ck.check_spatial_separation(
+                args.look, args.interferer, fr[c] * 1e6, x, y, channel=c))
 
     print(f"Frame: {args.frame}")
     print(f"K = {K} samples, N = {num_ant} antennas, {len(chans)} channel(s)\n")
