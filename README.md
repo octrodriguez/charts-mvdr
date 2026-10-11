@@ -61,6 +61,19 @@ picks up the installed `charts_constants` package (check
 `sim.constants.USING_CHARTS_CONSTANTS_PACKAGE`). Running the correlator
 requires a compiled Kotekan binary (path passed with `--kotekan-bin`).
 
+## Installation
+
+Install this repository as an editable package in the same environment as
+`charts-utils`. Run this on a login node: the build step needs internet access.
+
+```bash
+source $SCRATCH/charts-utils/.venv/bin/activate
+cd $SCRATCH/charts-mvdr
+pip install -e .
+```
+
+The package is then importable from any directory as `charts_mvdr`.
+
 ## Environment
 
 Developed and tested on Trillium (Digital Research Alliance of Canada / SciNet).
@@ -74,7 +87,14 @@ On other systems, replace `debugjob` / `sbatch` with the local scheduler.
 
 ## Repository layout
 
+## Repository layout
+
 ```
+pyproject.toml
+charts_mvdr/                 # importable package (pip install -e .)
+  __init__.py
+  data_io.py                 # baseband frame reader, 4-bit complex unpacking
+  np_correlator.py           # NumPy (CPU) reference correlator
 scripts/
   01_inspect.py              # dataset diagnostics (format, antennas, frames)
   02_snapshot_view.py        # per-source snapshot visualization (in progress)
@@ -91,12 +111,11 @@ Planned scripts:
 - `06_fitburst_inject.py`: synthetic FRB injection into real data.
 - `07_paper_figures.py`: figures for memos and reports.
 
-Planned shared package (`charts_mvdr/`), so that scripts do not duplicate code:
+Planned modules in `charts_mvdr/`:
 
-- Baseband I/O: 4-bit complex unpacking and frame reader.
-- NumPy reference correlator.
-- CPU-tier simulations (analytic and voltage-level).
-- DFT and MVDR beamformer weights.
+- `beamforming.py`: steering vectors, DFT and MVDR weights.
+- `sim_cpu.py`: analytic covariance and voltage-level CPU simulations.
+- Helpers to launch the Kotekan simulator and locate its outputs.
 
 Longer term: port the beamformer to the real-time correlator pipeline.
 
@@ -127,6 +146,16 @@ python test_charts/charts_sim.py correlate --reference <tag>
 Dataset paths are always passed as command-line arguments; no path is
 hard-coded in the scripts.
 
+Library usage:
+
+```python
+from charts_mvdr.data_io import read_baseband_frame
+from charts_mvdr.np_correlator import correlate
+
+V = read_baseband_frame(path, num_freq=336, num_ant=64)  # (time, freq, antenna)
+R = correlate(V, normalize=True)                          # (freq, antenna, antenna)
+```
+
 ## Data formats
 
 **Correlation dumps** (Kotekan `cudaCorrelatorAstron` → `rawFileWrite`):
@@ -135,11 +164,7 @@ hard-coded in the scripts.
 load_gpu_visibilities(path, n_freq=336, num_antennas=64, frame_format="prefixed")
 ```
 
-**Baseband frames** (`<window>_%07d.bin`): one `uint32` prefix followed by
-`samples × freq × antennas` bytes, each byte a 4-bit complex sample
-(real in the low nibble, imaginary in the high nibble, two's complement,
-clipped to [-7, +7]). Companion files: `<window>_meta.h5` (frame indices,
-timestamps, antenna positions) and `<window>_events.json` (injected events).
+**Baseband frames** (`<window>_%07d.bin`): one `uint32` prefix followed by `samples × freq × antennas` bytes, each byte a 4-bit complex sample (real in the low nibble, imaginary in the high nibble, two's complement). The F-engine specification clips to [-7, +7]; the current Python generator clips to [-8, +7]. Companion files: `<window>_meta.h5` (frame indices, timestamps, antenna positions) and `<window>_events.json` (injected events).
 
 Raw data, intermediate products (`.npy`) and figures are excluded via
 `.gitignore`.
