@@ -6,7 +6,7 @@ scripts before computing beamformer weights.
 """
 from dataclasses import dataclass, field
 from enum import Enum
-
+from charts_mvdr.beamforming import steering_vectors
 import numpy as np
 
 C_LIGHT = 299_792_458.0  # m/s
@@ -217,6 +217,42 @@ def check_saturation(Vc: np.ndarray, rail: int = 7, warn: float = 1e-3, fail: fl
         details={"fraction": frac, "n_minus8": n_m8, "std": float(np.sqrt(var))},
     )
 
+def check_degrees_of_freedom(n_sources: int, num_ant: int, warn: float = 0.25,
+                             fail: float = 0.5, channel=None) -> CheckResult:
+    """#7 Degrees of freedom: number of sources relative to the number of antennas."""
+    frac = n_sources / num_ant
+    name = "dof" if channel is None else f"dof[{channel}]"
+    return CheckResult(
+        name=name, status=_grade(frac, warn, fail), value=frac,
+        threshold=f"n_sources/N < {warn} (WARN < {fail})",
+        note=f"{n_sources} source(s), N = {num_ant}; MVDR can null at most N - 1",
+    )
+
+
+def check_spatial_separation(look_lm, interferers_lm, freq_hz: float, pos_x, pos_y,
+                             warn: float = 0.1, fail: float = 0.5, channel=None) -> CheckResult:
+    """#12 Similarity between the look direction and each interferer (includes aliasing).
+
+    cos^2 = |d^H a_i|^2 / N^2; nulling a strong interferer scales the SINR by
+    about (1 - cos^2). Grating lobes appear as cos^2 -> 1.
+    """
+    name = "separation" if channel is None else f"separation[{channel}]"
+    if len(interferers_lm) == 0:
+        return CheckResult(name=name, status=Status.NA, value=None,
+                           threshold="no interferer directions given")
+    d = steering_vectors(*look_lm, freq_hz, pos_x, pos_y)[0]
+    l_i, m_i = np.asarray(interferers_lm, dtype=float).T
+    A = steering_vectors(l_i, m_i, freq_hz, pos_x, pos_y)
+    cos2 = np.abs(A.conj() @ d) ** 2 / len(d) ** 2
+    k = int(np.argmax(cos2))
+    loss_db = -10 * np.log10(max(1.0 - cos2[k], 1e-12))
+    return CheckResult(
+        name=name, status=_grade(float(cos2[k]), warn, fail), value=float(cos2[k]),
+        threshold=f"max cos^2 < {warn} (WARN < {fail})",
+        note=f"closest interferer at ({l_i[k]:+.2f}, {m_i[k]:+.2f}); "
+             f"expected SINR loss from nulling ~ {loss_db:.2f} dB",
+        details={"cos2": cos2},
+    )
 
 def format_results(results: list[CheckResult]) -> str:
     """Plain-text table of check results."""
