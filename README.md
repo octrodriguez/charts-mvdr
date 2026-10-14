@@ -104,6 +104,8 @@ scripts/
   02_snapshot_view.py           # per-source snapshot visualization (in progress)
   03_validate_mvdr.py           # SINR sweeps on CPU-tier data with ground truth
   04_compare_correlators.py     # Kotekan GPU correlator vs np_correlator
+  05_mvdr_correlations.py       # two-stage DFT localization + MVDR on correlation dumps
+  06_saturation_analysis.py     # 4-bit saturation per channel vs Bussgang prediction
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -120,10 +122,9 @@ legacy/                         # early exploratory scripts, kept for reference
 
 Planned scripts:
 
-- `05_saturation_analysis.py`: effect of ADC saturation on calibration and MVDR.
-- `06_mvdr_real.py`: MVDR on real observations with a configurable window.
-- `07_fitburst_inject.py`: synthetic FRB injection into real data.
-- `08_paper_figures.py`: figures for memos and reports.
+- `07_mvdr_real.py`: MVDR on real observations with a configurable window.
+- `08_fitburst_inject.py`: synthetic FRB injection into real data.
+- `09_paper_figures.py`: figures for memos and reports.
 
 Pending checks in `checks.py`: #9 stationarity and #10 on/off-pulse
 (multi-frame), #11 steering-vector mismatch.
