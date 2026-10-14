@@ -22,7 +22,11 @@ then split as P = noise + signal + leak + residual (beamforming.power_budget):
 P_MVDR / P_DFT alone is ambiguous: it drops both when MVDR loses signal and when
 the DFT beam collects interference through its sidelobes. For moving sources
 (LEO) the fixed event position is only approximate, and the fit and leak are
-biased; use short time ranges.
+biased; use short time ranges. Under heavy 4-bit saturation (rail fraction
+~0.5) the quantization distortion is correlated between antennas: MVDR partly
+suppresses it, so the white-noise term overestimates the MVDR noise and
+retained underestimates the signal (see 03_validate_mvdr.py --sweep leo, which
+compares it with the true retention).
 
 Inputs are Kotekan cudaCorrelatorAstron dumps (corr_%07d.bin, read with
 read_astron_correlation) and the window metadata (<window>_meta.h5) with antenna

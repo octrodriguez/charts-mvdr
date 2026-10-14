@@ -115,3 +115,27 @@ def test_quantized_frame_feeds_checks():
     res = check_saturation(x[:, 0, :])
     assert res.status.value == "FAIL" and res.value < 0.8   # g^2 for sigma_in ~ 10 LSB
     assert res.details["n_minus8"] > 0
+
+
+def test_static_path_unchanged_and_drift_needs_times():
+    """A zero drift gives exactly the previous output; a drift without times fails."""
+    scn = scenario()
+    x0 = sc.simulate_voltages(scn, 256, rng=3)
+    t = np.linspace(0.0, 1.0, 256)
+    np.testing.assert_array_equal(sc.simulate_voltages(scn, 256, rng=3, times_s=t), x0)
+    scn.sources[1].drift = (0.02, -0.01)
+    with pytest.raises(ValueError):
+        sc.simulate_voltages(scn, 256, rng=3)
+
+
+def test_drifting_source_matches_static_source_at_same_position():
+    """With all samples at time t0, a moving source equals a static one at its
+    position at t0 (same random draws)."""
+    t0, drift = 0.4, (0.03, -0.02)
+    moving = scenario(); moving.sources[1].drift = drift
+    static = scenario()
+    static.sources[1].l += drift[0] * t0
+    static.sources[1].m += drift[1] * t0
+    xm = sc.simulate_voltages(moving, 128, rng=5, times_s=np.full(128, t0))
+    xs = sc.simulate_voltages(static, 128, rng=5)
+    np.testing.assert_allclose(xm, xs, atol=1e-5)

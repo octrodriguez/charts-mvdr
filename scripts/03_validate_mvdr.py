@@ -9,6 +9,10 @@ Four sweeps, all with ground truth from ``charts_mvdr.sim_cpu``:
              with 4-bit quantization (symmetric and asymmetric clipping).
   k        : SINR loss vs number of samples K, against Reed-Mallett-Brennan.
   loading  : SINR loss vs diagonal loading, with steering-vector phase errors.
+  leo      : signal retained by MVDR in a channel with a strong LEO-like
+             interferer, 2 x 2 design: static vs moving interferer, without vs
+             with 4-bit quantization (Kotekan-tier frame structure: several
+             1536-sample frames spaced in time).
 
 SINR loss is reported relative to the interference-free matched-filter SINR,
 SINR_0 = N p_s / sigma_n^2 (sigma_n^2 = complex noise variance).
@@ -37,7 +41,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from charts_mvdr import sim_cpu as sc
-from charts_mvdr.beamforming import dft_weights, mvdr_weights, steering_vectors
+from charts_mvdr.beamforming import (dft_weights, fit_source_powers, mvdr_weights,
+                                     power_budget, steering_vectors)
 from charts_mvdr.checks import check_saturation
 from charts_mvdr.np_correlator import correlate
 
@@ -340,8 +345,105 @@ def sweep_loading(args, out: Path):
 
 
 # ---------------------------------------------------------------------------
+# Sweep 5: strong moving interferer (LEO) and 4-bit quantization
+# ---------------------------------------------------------------------------
 
-SWEEPS = {"position": sweep_position, "inr": sweep_inr, "k": sweep_k, "loading": sweep_loading}
+def frame_times(n_frames: int, spacing_s: float, k_frame: int = K_FRAME,
+                dt_s: float = 10e-6 / 3) -> np.ndarray:
+    """Sample times of n_frames frames of k_frame samples, frame starts spaced by spacing_s."""
+    return (np.arange(n_frames)[:, None] * spacing_s + np.arange(k_frame)[None, :] * dt_s).ravel()
+
+
+def sweep_leo(args, out: Path):
+    """Separate the effects of interferer motion and 4-bit saturation on MVDR.
+
+    For each case and trial, paired realizations with the Sun on and off (same
+    noise and interferer draws) give R_on and R_off. MVDR weights come from R_on
+    (signal in the training data, as on real data). Two figures of merit:
+      retained_true  w^H (R_on - R_off) w / d^H (R_on - R_off) d * N^2: signal
+                     power through MVDR relative to the DFT (ground truth,
+                     includes the effect of quantization on the signal)
+      retained_fit   signal / p_look from the power budget of 05_mvdr_correlations
+                     (fit with the interferer at its position at the start of the
+                     window, as given by an events file)
+    If retained_fit drops while retained_true does not, the loss seen at the
+    Kotekan tier is an artifact of the budget model, not of the beamformer.
+    """
+    f, pos = args.leo_freq, sc.grid_positions(N_SIDE, N_SIDE, SPACING)
+    N = pos.shape[0]
+    times = frame_times(args.leo_frames, args.leo_spacing)
+    K = times.size
+    d = sc.steer(f, *SUN_LM, pos)
+    a_start = sc.steer(f, *args.leo_lm, pos)
+    p_leo = args.leo_amp ** 2                    # complex variance (amplitude A, w ~ CN(0, 1))
+    cases = [(mv, q) for mv in (False, True) for q in (None, "symmetric")]
+    loads = (0.0, 10.0)
+    keys = ("true", "fit", "wng_db", "null_db")
+    res = {(c, dl, k): np.zeros(args.trials) for c in cases for dl in loads for k in keys}
+    for t in range(args.trials):
+        seed = args.seed + t
+        for c in cases:
+            moving, quant = c
+            drift = tuple(args.leo_drift) if moving else (0.0, 0.0)
+            scn = lambda p_sun: sc.Scenario(
+                freqs_hz=[f], positions=pos, noise_sigma=args.leo_sigma,
+                sources=[sc.Source(*SUN_LM, power=p_sun, name="sun"),
+                         sc.Source(*args.leo_lm, power=p_leo, name="leo", drift=drift)])
+            x_on = sc.simulate_voltages(scn(args.leo_p_sun), K, seed, quantize=quant, times_s=times)
+            x_off = sc.simulate_voltages(scn(0.0), K, seed, quantize=quant, times_s=times)
+            R_on = correlate(x_on.astype(np.complex128), normalize=True)[0]
+            dR = R_on - correlate(x_off.astype(np.complex128), normalize=True)[0]
+            sig_dft = np.real(np.vdot(d, dR @ d)) / N**2
+            A = np.vstack([d, a_start])
+            p, noise = fit_source_powers(R_on, A)
+            for dl in loads:
+                w = mvdr_weights(R_on, d, loading=dl, loading_ref="noise")[0]
+                b = power_budget(R_on, w, A, p, noise)
+                res[(c, dl, "true")][t] = np.real(np.vdot(w, dR @ w)) / sig_dft
+                res[(c, dl, "fit")][t] = (b["total"] - b["noise"] - b["source"][1]) / p[0]
+                res[(c, dl, "wng_db")][t] = db(b["wng"])
+                res[(c, dl, "null_db")][t] = db(np.abs(np.vdot(w, a_start)) ** 2)
+        print(f"[leo] trial {t + 1}/{args.trials} done", flush=True)
+
+    drift_win = np.hypot(*args.leo_drift) * (times[-1] - times[0])
+    print(f"\n[leo] {f / 1e6:.1f} MHz, K = {K} ({args.leo_frames} frames over "
+          f"{times[-1] - times[0]:.2f} s), interferer A = {args.leo_amp} LSB at {tuple(args.leo_lm)}, "
+          f"drift {tuple(args.leo_drift)} /s ({drift_win:.4f} over the window), "
+          f"sigma = {args.leo_sigma} LSB, p_sun = {args.leo_p_sun}")
+    print(f"{'motion':>7} {'quant':>9} {'delta':>6} {'retained_true':>14} {'retained_fit':>13} "
+          f"{'WNG dB':>7} {'null dB':>8}")
+    for c in cases:
+        for dl in loads:
+            r = {k: res[(c, dl, k)] for k in keys}
+            print(f"{'moving' if c[0] else 'static':>7} {c[1] or 'none':>9} {dl:6.0f} "
+                  f"{r['true'].mean():8.3f} ±{r['true'].std():.3f} "
+                  f"{r['fit'].mean():7.3f} ±{r['fit'].std():.3f} "
+                  f"{r['wng_db'].mean():7.2f} {r['null_db'].mean():8.1f}")
+
+    np.savez(out / "sweep_leo.npz", freq=f, K=K, leo_lm=args.leo_lm, leo_drift=args.leo_drift,
+             leo_amp=args.leo_amp, sigma=args.leo_sigma, p_sun=args.leo_p_sun, loadings=loads,
+             **{f"{'moving' if c[0] else 'static'}_{c[1] or 'none'}_d{dl:g}_{k}": v
+                for (c, dl, k), v in res.items()})
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
+    xlab = [f"{'moving' if c[0] else 'static'}\n{c[1] or 'no quant.'}" for c in cases]
+    xx = np.arange(len(cases))
+    for ax, dl in zip(axes, loads):
+        for j, (k, lab) in enumerate((("true", "retained (true)"), ("fit", "retained (budget fit)"))):
+            m = [res[(c, dl, k)].mean() for c in cases]
+            e = [res[(c, dl, k)].std() for c in cases]
+            ax.bar(xx + (j - 0.5) * 0.36, m, 0.36, yerr=e, capsize=3, label=lab)
+        ax.set_xticks(xx, xlab); ax.axhline(1.0, color="0.4", lw=0.8)
+        ax.set_title(f"MVDR, loading {dl:g} $\\hat\\sigma_n^2$"); ax.grid(alpha=0.3, axis="y")
+    axes[0].set_ylabel("signal retained"); axes[0].set_ylim(0.5, 1.1); axes[0].legend(fontsize=8)
+    fig.suptitle(f"Strong interferer A = {args.leo_amp} LSB, K = {K}", fontsize=10)
+    fig.tight_layout(); fig.savefig(out / "sweep_leo.png", dpi=130); plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+
+SWEEPS = {"position": sweep_position, "inr": sweep_inr, "k": sweep_k, "loading": sweep_loading,
+          "leo": sweep_leo}
 
 
 def main():
@@ -364,11 +466,23 @@ def main():
     p.add_argument("--k-eval", type=int, default=32 * 1536)
     # loading
     p.add_argument("--phase-err-deg", type=float, nargs="+", default=[0.0, 5.0, 15.0])
+    # leo
+    p.add_argument("--leo-freq", type=float, default=349.8e6, help="Hz")
+    p.add_argument("--leo-lm", type=float, nargs=2, default=[0.089, 0.071],
+                   help="interferer (l, m) at the start of the window")
+    p.add_argument("--leo-drift", type=float, nargs=2, default=[0.018, 0.018],
+                   help="interferer drift (dl/dt, dm/dt) in 1/s for the moving case")
+    p.add_argument("--leo-amp", type=float, default=12.2, help="interferer amplitude [LSB]")
+    p.add_argument("--leo-sigma", type=float, default=2.0, help="noise std per component [LSB]")
+    p.add_argument("--leo-p-sun", type=float, default=0.43, help="desired-signal complex variance")
+    p.add_argument("--leo-frames", type=int, default=11)
+    p.add_argument("--leo-spacing", type=float, default=0.05, help="frame spacing [s]")
     args = p.parse_args()
 
     if args.quick:
         args.grid, args.cut_points, args.trials = 41, 61, 3
         args.inr_step, args.k_eval = 10.0, 4 * 1536
+        args.leo_frames = 3
 
     args.out.mkdir(parents=True, exist_ok=True)
     for name in (SWEEPS if args.sweep == "all" else [args.sweep]):

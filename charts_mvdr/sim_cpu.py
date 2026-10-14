@@ -93,6 +93,10 @@ class Source:
 
     ``power`` may be a scalar or an array with one value per frequency.
     ``phase`` is only used by the ``"tone"`` model (radians).
+    ``drift`` is the rate (dl/dt, dm/dt) in 1/s of a moving source (e.g. a LEO
+    satellite): at time t the source is at (l + dl/dt t, m + dm/dt t). It is
+    used by ``simulate_voltages`` when sample times are given; the analytic
+    covariance uses the position at t = 0.
     """
     l: float
     m: float
@@ -100,6 +104,11 @@ class Source:
     model: SourceModel = "gaussian"
     phase: float = 0.0
     name: str = ""
+    drift: tuple[float, float] = (0.0, 0.0)
+
+    @property
+    def moving(self) -> bool:
+        return self.drift[0] != 0.0 or self.drift[1] != 0.0
 
     def __post_init__(self) -> None:
         if self.l**2 + self.m**2 > 1.0:
@@ -200,27 +209,45 @@ def _cn(rng: np.random.Generator, shape, var: float, dtype) -> np.ndarray:
 def simulate_voltages(scn: Scenario, n_samples: int,
                       rng: np.random.Generator | int | None = None,
                       quantize: ClipMode | None = None,
-                      dtype=np.complex64) -> np.ndarray:
+                      dtype=np.complex64,
+                      times_s: np.ndarray | None = None) -> np.ndarray:
     """Complex baseband samples, shape (time, freq, antenna) = (K, F, N).
 
     Same layout as ``data_io.read_baseband_frame``. Gaussian sources are
     independent per sample and per frequency; tone sources are a constant
     phasor over the K samples.
+
+    ``times_s`` (K,) gives the time of each sample; it is required when a source
+    has a nonzero ``drift`` and then sets its direction sample by sample. The
+    random draws do not depend on ``times_s`` or ``drift``, so a moving and a
+    static version of the same scenario share noise and source waveforms.
     """
     rng = np.random.default_rng(rng)
     F, N, K = scn.freqs_hz.size, scn.n_ant, n_samples
+    if any(s.moving for s in scn.sources):
+        if times_s is None:
+            raise ValueError("times_s is required for sources with nonzero drift")
+        times_s = np.asarray(times_s, dtype=float)
+        if times_s.shape != (K,):
+            raise ValueError(f"times_s must have shape ({K},), got {times_s.shape}")
     x = np.empty((K, F, N), dtype=dtype)
     for i, f in enumerate(scn.freqs_hz):
         g = scn.gain_at(i)
         xi = _cn(rng, (K, N), 2.0 * scn.noise_sigma**2, dtype)
         for s in scn.sources:
-            a = (g * steer(f, s.l, s.m, scn.positions)).astype(dtype)
+            if s.moving:     # (K, N): one steering vector per sample
+                a = g[None, :] * steering_vectors(s.l + s.drift[0] * times_s,
+                                                  s.m + s.drift[1] * times_s, f,
+                                                  scn.positions[:, 0], scn.positions[:, 1])
+            else:
+                a = (g * steer(f, s.l, s.m, scn.positions))[None, :]
+            a = a.astype(dtype)
             p = s.power_at(i)
             if s.model == "gaussian":
                 sig = _cn(rng, (K, 1), p, dtype)
             else:
                 sig = np.full((K, 1), np.sqrt(p) * np.exp(1j * s.phase), dtype=dtype)
-            xi += sig * a[None, :]
+            xi += sig * a
         x[:, i, :] = quantize_4bit(xi, quantize) if quantize else xi
     return x
 
