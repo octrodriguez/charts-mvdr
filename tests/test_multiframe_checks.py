@@ -66,3 +66,45 @@ def test_on_off_new_interferer_fails():
     d = sc.steer(F0, *LOOK, POS)
     res = ck.check_on_off(on, 3 * K, np.mean(off[:10], 0), np.mean(off[10:], 0), 10 * K, d)
     assert res.status == ck.Status.FAIL, res.note
+
+
+# --- #11 steering-vector mismatch -------------------------------------------
+
+def sun_cov(gains, frames=20):
+    scn = sc.Scenario(freqs_hz=[F0], positions=POS, noise_sigma=1.0, gains=gains,
+                      sources=[sc.Source(*LOOK, 1.0)])
+    return np.mean([correlate(sc.simulate_voltages(scn, K, rng=s).astype(np.complex128),
+                              normalize=True)[0] for s in range(frames)], axis=0)
+
+
+def test_steering_perfect_calibration_passes():
+    res = ck.check_steering_mismatch(sun_cov(None), LOOK, F0, POS[:, 0], POS[:, 1], 20 * K)
+    assert res.status == ck.Status.PASS, res.note
+
+
+def test_steering_phase_errors_are_measured():
+    rng = np.random.default_rng(3)
+    phase = np.radians(8.0) * rng.standard_normal(POS.shape[0])
+    res = ck.check_steering_mismatch(sun_cov(np.exp(1j * phase)), LOOK, F0,
+                                     POS[:, 0], POS[:, 1], 20 * K)
+    # residual after removing the common phase and the best-fit linear gradient
+    A = np.column_stack([np.ones(POS.shape[0]), POS[:, 0], POS[:, 1]])
+    true = np.degrees(np.std(phase - A @ np.linalg.lstsq(A, phase, rcond=None)[0]))
+    assert res.details["excess_deg"] == pytest.approx(true, abs=0.5)
+    assert res.status != ck.Status.PASS     # >= 3 deg rms is flagged
+
+
+def test_steering_pointing_offset_is_separated():
+    scn = sc.Scenario(freqs_hz=[F0], positions=POS, noise_sigma=1.0,
+                      sources=[sc.Source(LOOK[0] + 0.02, LOOK[1] - 0.01, 1.0)])
+    R = np.mean([correlate(sc.simulate_voltages(scn, K, rng=s).astype(np.complex128),
+                           normalize=True)[0] for s in range(20)], axis=0)
+    res = ck.check_steering_mismatch(R, LOOK, F0, POS[:, 0], POS[:, 1], 20 * K)
+    assert res.status == ck.Status.PASS
+    dl, dm = res.details["pointing_offset"]
+    assert dl == pytest.approx(0.02, abs=0.003) and dm == pytest.approx(-0.01, abs=0.003)
+
+
+def test_steering_na_when_interferer_dominates():
+    res = ck.check_steering_mismatch(cov(0, rfi=400.0), LOOK, F0, POS[:, 0], POS[:, 1], K)
+    assert res.status == ck.Status.NA

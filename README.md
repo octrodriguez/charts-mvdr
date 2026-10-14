@@ -127,8 +127,6 @@ Planned scripts:
 - `08_fitburst_inject.py`: synthetic FRB injection into real data.
 - `09_paper_figures.py`: figures for memos and reports.
 
-Pending check in `checks.py`: #11 steering-vector mismatch.
-
 Longer term: port the beamformer to the real-time correlator pipeline.
 
 ## Usage
@@ -142,6 +140,7 @@ python -m pytest -q tests/                                         # unit tests
 python scripts/00_check_assumptions.py <frame.bin>                 # MVDR pre-flight checks
 python scripts/00_check_assumptions.py <frame.bin> --multi-frame    # + #9 stationarity over the window
 python scripts/00_check_assumptions.py <frame.bin> --look L M --on T0 T1 --off T0 T1   # + #10
+python scripts/00_check_assumptions.py <frame.bin> --look L M --multi-frame          # + #11 on the window mean
 python scripts/01_inspect.py --input <data_dir> --pattern "corr_*_0000000.bin" --summary
 sbatch jobs/validate_mvdr.sh                                       # SINR sweeps
 ```

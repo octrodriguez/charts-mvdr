@@ -9,6 +9,8 @@ Multi-frame checks use every frame of the same window (same directory and
 prefix as the given frame), or the matching Kotekan dumps with --corr-dir:
   --multi-frame              #9 stationarity over the window (or --t-range)
   --on T0 T1 --off T0 T1     #10 on/off-pulse consistency (needs --look)
+With --look, #11 (steering-vector mismatch) runs on the frame, or on the window
+mean when --multi-frame is given (lower estimation noise).
 
 Examples:
     python 00_check_assumptions.py <window>_0000000.bin \
@@ -143,8 +145,9 @@ def stationarity_results(frames, chans, num_freq, num_ant, K):
                        for i in range(len(chans))])
     z_mean, z_consec = np.array(z_mean), np.array(z_consec)
     times = [e[1] for e in frames]
-    return [ck.check_stationarity(z_mean[:, i], z_consec[:, i], times_s=times, channel=c)
-            for i, c in enumerate(chans)]
+    results = [ck.check_stationarity(z_mean[:, i], z_consec[:, i], times_s=times, channel=c)
+               for i, c in enumerate(chans)]
+    return results, R_mean
 
 
 def on_off_results(frames, chans, num_freq, num_ant, K, on, off, look, meta):
@@ -211,6 +214,9 @@ def main():
         if args.look is not None:
             per_channel.append(ck.check_spatial_separation(
                 args.look, args.interferer, fr[c] * 1e6, x, y, channel=c))
+            if not args.multi_frame:   # with --multi-frame, #11 uses the window mean
+                per_channel.append(ck.check_steering_mismatch(
+                    Rc, args.look, fr[c] * 1e6, x, y, K, channel=c))
 
     if args.multi_frame or args.on is not None:
         frames = window_frames(args.frame, args.corr_dir, meta)
@@ -218,7 +224,12 @@ def main():
             sel = frames if args.t_range is None else [
                 e for e in frames if args.t_range[0] <= e[1] <= args.t_range[1]]
             print(f"#9: {len(sel)} frames ({sel[0][3]})")
-            per_channel += stationarity_results(sel, chans, num_freq, num_ant, K)
+            stat, R_mean = stationarity_results(sel, chans, num_freq, num_ant, K)
+            per_channel += stat
+            if args.look is not None:   # #11 on the window mean: lower estimation noise
+                per_channel += [ck.check_steering_mismatch(
+                    R_mean[i], args.look, fr[c] * 1e6, x, y, K * len(sel), channel=c)
+                    for i, c in enumerate(chans)]
         if args.on is not None:
             if args.off is None or args.look is None:
                 raise SystemExit("--on requires --off and --look")

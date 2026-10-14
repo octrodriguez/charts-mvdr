@@ -357,6 +357,70 @@ def check_on_off(R_on: np.ndarray, K_on: float, R_off_a: np.ndarray, R_off_b: np
     )
 
 
+def check_steering_mismatch(R: np.ndarray, look_lm, freq_hz: float, pos_x, pos_y,
+                            num_samples: float, warn_deg: float = 3.0, fail_deg: float = 10.0,
+                            min_dominance: float = 3.0, channel=None) -> CheckResult:
+    """#11 Steering-vector mismatch towards a dominant source in the look direction.
+
+    The principal eigenvector of R estimates the true array response a_hat. With
+    r_n = a_hat_n conj(d_n) (d the model steering vector), the common phase is
+    removed and a linear phase gradient in (x, y) is fitted: the gradient is a
+    pointing offset (dl, dm), reported separately; the residual phase rms is the
+    calibration error. The eigenvector estimation noise,
+        sigma_phi^2 ~ (N / 2K) lambda_1 sigma_n^2 / (lambda_1 - sigma_n^2)^2,
+    is removed in quadrature. N/A when the dominant source is not in the look
+    direction (cos^2 < 0.5) or does not dominate the noise (lambda_1 / median <
+    min_dominance). Graded on the excess phase rms [deg].
+    """
+    name = "steering" if channel is None else f"steering[{channel}]"
+    x = np.asarray(pos_x, dtype=float)
+    y = np.asarray(pos_y, dtype=float)
+    N = x.size
+    d = steering_vectors(*look_lm, freq_hz, x, y)[0]
+    ev, U = np.linalg.eigh(R)
+    lam1, noise = float(ev[-1]), float(np.median(ev))
+    a_hat = U[:, -1] * np.sqrt(N)
+    cos2 = float(np.abs(np.vdot(d, a_hat)) ** 2 / N**2)
+    dominance = lam1 / noise
+    threshold = f"phase rms < {warn_deg:g} deg (WARN < {fail_deg:g} deg)"
+    if dominance < min_dominance or cos2 < 0.5:
+        why = (f"dominant source not in the look direction (cos^2 = {cos2:.2f})" if cos2 < 0.5
+               else f"no dominant source (lambda_1 / median = {dominance:.1f})")
+        return CheckResult(name=name, status=Status.NA, value=None, threshold=threshold,
+                           note=why, details={"cos2": cos2, "dominance": dominance})
+
+    r = a_hat * np.conj(d)
+    r = r * np.exp(-1j * np.angle(np.sum(r)))                 # remove common phase
+    phi = np.angle(r)
+    A = np.column_stack([np.ones(N), x - x.mean(), y - y.mean()])
+    coef, *_ = np.linalg.lstsq(A, phi, rcond=None)
+    resid = phi - A @ coef
+    k = 2 * np.pi * freq_hz / C_LIGHT
+    dl, dm = -coef[1] / k, -coef[2] / k                        # a_n ~ exp(-j k (l x + m y))
+    rms = float(np.degrees(np.sqrt(np.mean(resid**2))))
+    noise_deg = float(np.degrees(np.sqrt(
+        N / (2.0 * num_samples) * lam1 * noise / (lam1 - noise) ** 2)))
+    excess = float(np.sqrt(max(rms**2 - noise_deg**2, 0.0)))
+    amp = np.abs(a_hat)
+    amp_rms = float(np.std(amp / amp.mean()))
+    if excess < warn_deg:
+        advice = "no loading needed for calibration errors"
+    elif excess < fail_deg:
+        advice = "use diagonal loading >= 10 sigma_n^2 (loading_ref='noise')"
+    else:
+        advice = "use diagonal loading >= 30 sigma_n^2 and revisit the calibration"
+    return CheckResult(
+        name=name, status=_grade(excess, warn_deg, fail_deg), value=excess,
+        threshold=threshold,
+        note=f"phase rms = {rms:.2f} deg (estimation noise {noise_deg:.2f} deg); "
+             f"amplitude rms = {100 * amp_rms:.1f} %; pointing offset "
+             f"(dl, dm) = ({dl:+.4f}, {dm:+.4f}); cos^2 = {cos2:.3f}; {advice}",
+        details={"phase_rms_deg": rms, "noise_deg": noise_deg, "excess_deg": excess,
+                 "amp_rms": amp_rms, "pointing_offset": (float(dl), float(dm)),
+                 "cos2": cos2, "phase_resid_rad": resid},
+    )
+
+
 def format_results(results: list[CheckResult]) -> str:
     """Plain-text table of check results."""
     w = max([16] + [len(r.name) for r in results])
