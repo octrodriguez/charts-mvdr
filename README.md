@@ -56,10 +56,11 @@ source $SCRATCH/charts-utils/.venv/bin/activate
 pip install -r $SCRATCH/kotekan/test_charts/requirements.txt
 ```
 
-Tested against `kotekan_charts` commit `db331bb7` (2026-10-03). The simulator
-picks up the installed `charts_constants` package (check
-`sim.constants.USING_CHARTS_CONSTANTS_PACKAGE`). Running the correlator
-requires a compiled Kotekan binary (path passed with `--kotekan-bin`).
+Generating baseband needs only Python. Correlating requires a compiled Kotekan
+binary, built on a GPU node with `jobs/build_kotekan.sh` (see Usage). On
+Trillium the build removes `/usr/lib64` from the RPATH of the binaries: CMake
+puts it first, which loads the OS glibc instead of the StdEnv/2023 one and the
+binary fails with `GLIBC_2.35 not found`.
 
 ## Installation
 
@@ -80,42 +81,52 @@ Developed and tested on Trillium (Digital Research Alliance of Canada / SciNet).
 On other systems, replace `debugjob` / `sbatch` with the local scheduler.
 
 - Light tests and CPU-tier work on login nodes; heavier runs via `debugjob`.
-- Baseband generation and Kotekan correlation on GPU nodes via Slurm.
-- Long jobs are submitted with `sbatch`.
+- Kotekan is built and run on GPU nodes (submit from `trig-login01`).
 - Compute nodes have no internet access: install packages from a login node.
 - Data live under `$SCRATCH` and are **not** tracked in this repository.
-
-## Repository layout
+- **Always set `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS`** (e.g. 4). Without
+  them NumPy starts one BLAS thread per core (192 on a Trillium node) for every
+  small matrix operation, which makes the scripts orders of magnitude slower.
 
 ## Repository layout
 
 ```
 pyproject.toml
-charts_mvdr/                 # importable package (pip install -e .)
-  __init__.py
-  data_io.py                 # baseband frame reader, 4-bit complex unpacking
-  np_correlator.py           # NumPy (CPU) reference correlator
+charts_mvdr/                    # importable package (pip install -e .)
+  data_io.py                    # baseband frames, window metadata, Kotekan correlation dumps
+  np_correlator.py              # NumPy (CPU) reference correlator
+  beamforming.py                # steering vectors, DFT/MVDR weights, (l, m) grid
+  checks.py                     # pre-flight checks of MVDR assumptions
+  sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
-  01_inspect.py              # dataset diagnostics (format, antennas, frames)
-  02_snapshot_view.py        # per-source snapshot visualization (in progress)
-legacy/                      # early exploratory scripts, kept for reference
+  00_check_assumptions.py       # runs all checks on a frame, summary per check
+  01_inspect.py                 # dataset diagnostics (format, antennas, frames)
+  02_snapshot_view.py           # per-source snapshot visualization (in progress)
+  03_validate_mvdr.py           # SINR sweeps on CPU-tier data with ground truth
+  04_compare_correlators.py     # Kotekan GPU correlator vs np_correlator
+jobs/
+  validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
+  build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
+  correlate_kotekan.sh          # Slurm: Kotekan correlator on a window + comparison
+tests/                          # pytest suite (no external data needed)
+tools/
+  export_md.py                  # export tracked source files as one Markdown bundle
+  export_github_md.py           # export GitHub metadata (PRs, issues, commits)
+  diagnose_astron_layout.py     # layout/convention diagnosis of correlator dumps
+legacy/                         # early exploratory scripts, kept for reference
 ```
 
 ## Roadmap
 
 Planned scripts:
 
-- `03_validate_mvdr.py`: MVDR validation on simulated data with known ground truth.
-- `04_saturation_analysis.py`: effect of ADC saturation on calibration and MVDR.
-- `05_mvdr_real.py`: MVDR on real observations with a configurable window.
-- `06_fitburst_inject.py`: synthetic FRB injection into real data.
-- `07_paper_figures.py`: figures for memos and reports.
+- `05_saturation_analysis.py`: effect of ADC saturation on calibration and MVDR.
+- `06_mvdr_real.py`: MVDR on real observations with a configurable window.
+- `07_fitburst_inject.py`: synthetic FRB injection into real data.
+- `08_paper_figures.py`: figures for memos and reports.
 
-Planned modules in `charts_mvdr/`:
-
-- `beamforming.py`: steering vectors, DFT and MVDR weights.
-- `sim_cpu.py`: analytic covariance and voltage-level CPU simulations.
-- Helpers to launch the Kotekan simulator and locate its outputs.
+Pending checks in `checks.py`: #9 stationarity and #10 on/off-pulse
+(multi-frame), #11 steering-vector mismatch.
 
 Longer term: port the beamformer to the real-time correlator pipeline.
 
@@ -123,24 +134,25 @@ Longer term: port the beamformer to the real-time correlator pipeline.
 
 ```bash
 source $SCRATCH/charts-utils/.venv/bin/activate
-cd $SCRATCH/charts-mvdr/scripts
+export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4
+cd $SCRATCH/charts-mvdr
 
-# Dataset diagnostics
-python 01_inspect.py --input <data_dir> --pattern "corr_*_0000000.bin" --summary
-
-# Snapshot visualization
-python 02_snapshot_view.py --input <data_dir> --source frb --mode all --compare
+python -m pytest -q tests/                                         # unit tests
+python scripts/00_check_assumptions.py <frame.bin>                 # MVDR pre-flight checks
+python scripts/01_inspect.py --input <data_dir> --pattern "corr_*_0000000.bin" --summary
+sbatch jobs/validate_mvdr.sh                                       # SINR sweeps
 ```
 
-Full-tier simulation (from `$SCRATCH/kotekan`):
+Full tier (Kotekan):
 
 ```bash
-# Generate baseband only (no Kotekan binary needed)
-python test_charts/charts_sim.py pipeline --preset quick --profile day --dry-run \
-    --scratch-dir $SCRATCH/sim_test
+# Generate a baseband window (CPU, from a Kotekan worktree)
+python test_charts/charts_sim.py generate --duration-s 5 --antennas 64 --num-freq 336 \
+    --profile day --start-time 2026-03-20T15:00:00 --scratch-dir $SCRATCH/data/sim_test/<name>
 
-# Correlate a saved reference window (GPU node + Kotekan binary)
-python test_charts/charts_sim.py correlate --reference <tag>
+# Build Kotekan and correlate a window (GPU, from trig-login01)
+sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh
+sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir> jobs/correlate_kotekan.sh
 ```
 
 Dataset paths are always passed as command-line arguments; no path is
@@ -149,31 +161,42 @@ hard-coded in the scripts.
 Library usage:
 
 ```python
-from charts_mvdr.data_io import read_baseband_frame
+from charts_mvdr.data_io import read_baseband_frame, read_astron_correlation
 from charts_mvdr.np_correlator import correlate
 
-V = read_baseband_frame(path, num_freq=336, num_ant=64)  # (time, freq, antenna)
-R = correlate(V, normalize=True)                          # (freq, antenna, antenna)
+V = read_baseband_frame(path, num_freq=336, num_ant=64)       # (time, freq, antenna)
+R = correlate(V, normalize=True)                               # (freq, antenna, antenna)
+Rk = read_astron_correlation(corr_path, num_freq=336, num_ant=64)  # same convention, sums
 ```
 
 ## Data formats
 
-**Correlation dumps** (Kotekan `cudaCorrelatorAstron` → `rawFileWrite`):
+**Baseband frames** (`<window>_%07d.bin`): one `uint32` prefix followed by
+`samples × freq × antennas` bytes, each byte a 4-bit complex sample (real in the
+low nibble, imaginary in the high nibble, two's complement). The F-engine
+produces values in [-7, +7]. Companion files: `<window>_meta.h5` (frequencies,
+antenna positions) and `<window>_events.json` (injected events).
 
-```python
-load_gpu_visibilities(path, n_freq=336, num_antennas=64, frame_format="prefixed")
-```
+**Correlation dumps** (Kotekan `cudaCorrelatorAstron` → `rawFileWrite`,
+`corr_%07d.bin`): `uint32` metadata size, metadata, then `int32` (re, im) pairs
+with shape `(freq, blocks, 2, 2, 2)`. Blocks of 2×2 elements cover the lower
+block triangle in row-major order. Read with `data_io.read_astron_correlation`.
 
-**Baseband frames** (`<window>_%07d.bin`): one `uint32` prefix followed by `samples × freq × antennas` bytes, each byte a 4-bit complex sample (real in the low nibble, imaginary in the high nibble, two's complement). The F-engine specification clips to [-7, +7]; the current Python generator clips to [-8, +7]. Companion files: `<window>_meta.h5` (frame indices, timestamps, antenna positions) and `<window>_events.json` (injected events).
-
-Raw data, intermediate products (`.npy`) and figures are excluded via
-`.gitignore`.
+Raw data, intermediate products (`.npy`), Slurm logs and generated bundles are
+excluded via `.gitignore`.
 
 ## Conventions
 
-- Visibilities: `R_ij[f] = sum_t v_i[t, f] * conj(v_j[t, f])`. Agreement with
-  the Kotekan output convention is to be verified against the NumPy
-  reference correlator.
+- Visibilities: `R_ij[f] = sum_t v_i[t, f] * conj(v_j[t, f])` (`np_correlator`).
+- The Kotekan correlator stores the conjugate, `sum_t conj(v_i) v_j`;
+  `read_astron_correlation` conjugates, so both sources share one convention.
+  Verified with `04_compare_correlators.py`: exact agreement for data in
+  [-7, +7].
+- Samples equal to -8 (outside the F-engine range) are **not** correlated
+  exactly: the kernel negates one operand in 4-bit arithmetic, so -(-8) wraps
+  to -8 and the imaginary part of the affected cross-correlations is wrong
+  (always by multiples of 16). Simulated data must be clipped to [-7, +7].
+- Steering vector: `a_n = exp(-j 2 pi f (l x_n + m y_n) / c)`.
 - Voltages in ADC units (LSB).
 - Baseband frame: 1536 samples × 10/3 µs = 5.12 ms. One simulated correlation
   dump per frame; the production correlator integrates 10.24 s.
