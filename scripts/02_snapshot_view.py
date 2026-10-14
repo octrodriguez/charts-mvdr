@@ -2,18 +2,18 @@
 """
 02_snapshot_view.py — Visualize single-snapshot correlation datasets.
 
-Designed for the Fernando snapshot dataset:
-    /scratch/octo/charts-simulations/16_09_2026Fernando_corr/
-    Files: corr_<source>_<condition>_0000000.bin
+Input: a directory of single-snapshot correlation dumps named
+    corr_<source>_<condition>_0000000.bin
+(e.g. one dump per source and noise/saturation condition).
 
 Verified byte-level format (Astron blocked, prefixed header):
     [4 B]         uint32 LE metadata_size
     [49,848 B]    chordMetadata
     [5,677,056 B] payload
-    Payload: 336 freq x 528 baselines x 2x2 pols x int32 (I, Q)
-    Load with: load_gpu_visibilities(path, n_freq=336, num_antennas=64,
-                                     frame_format="prefixed")
-    Returns: (336, 2080) complex64
+    Payload: 336 freq x 528 blocks x 2x2 elements x int32 (re, im)
+    Loaded with charts_mvdr.data_io.read_astron_correlation, which returns the
+    full matrix R[f, i, j] = sum_t v_i conj(v_j) (np_correlator convention,
+    verified against Kotekan with scripts/04_compare_correlators.py).
 
 Three view modes:
     baseline : |V(f)| and arg(V(f)) for one antenna pair
@@ -28,8 +28,7 @@ Usage:
         --condition with_noise
 
 IMPORTANT: the snapshots contain 336 channels = HALF of the 672-channel
-CHARTS band. Unless Fernando confirms otherwise, the default assumption is
-the LOWER half (300-400.8 MHz). Override --freq-start if the file contains
+CHARTS band. The default assumption is the LOWER half (300-400.8 MHz). Override --freq-start if the file contains
 the upper half (400.8-501.6 MHz).
 """
 from __future__ import annotations
@@ -46,9 +45,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from charts_utils.core.io import load_gpu_visibilities
-from charts_utils.core.kotekan import KOTEKAN_GPU_N_FREQ
-from charts_utils.core.visibilities import visibility_product_index
+from charts_mvdr.data_io import read_astron_correlation
+
+SNAPSHOT_N_FREQ = 336             # channels per dump (half of the 672-channel band)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +70,7 @@ def global_channel_to_mhz(ch: int) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Visualize Fernando snapshot correlations.",
+        description="Visualize single-snapshot correlation dumps.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--input", required=True,
@@ -85,8 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-freq", type=int, default=336,
                    help="Channels per snapshot (NOT 672).")
     p.add_argument("--num-antennas", type=int, default=64)
-    p.add_argument("--frame-format", default="prefixed",
-                   choices=["prefixed", "headerless", "auto"])
     p.add_argument("--freq-start", type=float, default=BAND_START_MHZ,
                    help="Frequency of channel 0 in the snapshot (MHz). "
                         "Default assumes the lower half of the band.")
@@ -157,11 +154,6 @@ def parse_baseline(spec: str, n_ant: int) -> tuple[int, int]:
     return a, b
 
 
-def auto_indices(n_ant: int) -> list[int]:
-    """Flat indices of autocorrelations in the upper-triangle ordering."""
-    return [k * n_ant - k * (k - 1) // 2 for k in range(n_ant)]
-
-
 def frequency_axis(n_freq: int, freq_start: float) -> np.ndarray:
     return freq_start + np.arange(n_freq) * CHANNEL_WIDTH_MHZ
 
@@ -182,10 +174,7 @@ def annotate_rfi(ax, freq: np.ndarray, rfi_channels: list[int]) -> None:
 def draw_baseline(fig, spec_mag, spec_phase,
                   vis, freq, a, b, n_ant, rfi_channels, label):
     """Two-row panel: |V| and phase for one baseline."""
-    flat, conj = visibility_product_index(a, b, n_ant)
-    v = vis[:, flat]
-    if conj:
-        v = np.conj(v)
+    v = vis[:, a, b]                      # R_ab = sum_t v_a conj(v_b)
 
     ax_mag = fig.add_subplot(spec_mag)
     ax_mag.plot(freq, np.abs(v), lw=1.0, color="C0")
@@ -211,7 +200,7 @@ def draw_baseline(fig, spec_mag, spec_phase,
 
 def draw_autos(fig, spec_row, vis, freq, n_ant, rfi_channels, label):
     """One-row panel: all 64 autocorrelations vs frequency."""
-    auto = np.abs(vis[:, auto_indices(n_ant)])
+    auto = np.diagonal(vis, axis1=1, axis2=2).real
     ax = fig.add_subplot(spec_row)
     for k in range(n_ant):
         ax.plot(freq, auto[:, k], lw=0.4, alpha=0.5)
@@ -228,7 +217,8 @@ def draw_autos(fig, spec_row, vis, freq, n_ant, rfi_channels, label):
 
 def draw_heatmap(fig, spec_row, vis, freq, n_ant, rfi_channels, label, block=10):
     """One-row panel: |V| heatmap over (baseline, frequency)."""
-    mag = np.abs(vis)  # (n_freq, n_prod)
+    iu, ju = np.triu_indices(n_ant)       # products i <= j, row-major
+    mag = np.abs(vis[:, iu, ju])          # (n_freq, n_prod)
     n_freq, n_prod = mag.shape
 
     if block > 1:
@@ -286,9 +276,9 @@ def main(argv=None) -> None:
     print(f"Directory : {args.input}")
     print(f"Conditions: {sorted(sources.keys())}")
 
-    if args.n_freq != KOTEKAN_GPU_N_FREQ // 2:
+    if args.n_freq != SNAPSHOT_N_FREQ:
         print(f"WARNING: --n-freq={args.n_freq} but the expected snapshot "
-              f"size is {KOTEKAN_GPU_N_FREQ // 2}. Proceeding anyway.")
+              f"size is {SNAPSHOT_N_FREQ}. Proceeding anyway.")
 
     # Decide which conditions to plot
     if args.compare:
@@ -334,12 +324,7 @@ def main(argv=None) -> None:
     for cond in conditions_to_plot:
         path = sources[cond]
         try:
-            vis = load_gpu_visibilities(
-                path,
-                n_freq=args.n_freq,
-                num_antennas=args.num_antennas,
-                frame_format=args.frame_format,
-            )
+            vis = read_astron_correlation(path, args.n_freq, args.num_antennas)
         except Exception as exc:
             print(f"  [{cond}] FAILED: {exc}")
             continue
