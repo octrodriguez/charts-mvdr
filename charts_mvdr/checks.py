@@ -261,6 +261,102 @@ def check_spatial_separation(look_lm, interferers_lm, freq_hz: float, pos_x, pos
         details={"cos2": cos2},
     )
 
+def whitened_change(R_a: np.ndarray, R_b: np.ndarray, R_ref: np.ndarray,
+                    num_samples: float) -> float:
+    """K ||R_ref^(-1/2) (R_a - R_b) R_ref^(-H/2)||_F^2 / N^2.
+
+    For circular Gaussian data and R_a an estimate of R_ref with K samples the
+    expectation is 1 (whitening makes the N^2 entries of the error independent
+    with variance 1/K), whatever the source powers. Quantized data give a bias of
+    a few percent to ~20 %, which the checks below remove with a baseline
+    measured on the same data.
+    """
+    L = np.linalg.cholesky(R_ref)
+    X = np.linalg.solve(L, R_a - R_b)
+    W = np.linalg.solve(L, X.conj().T).conj().T
+    return float(num_samples * np.sum(np.abs(W) ** 2) / R_ref.shape[0] ** 2)
+
+
+def check_stationarity(z_mean: np.ndarray, z_consec: np.ndarray, warn: float = 1.25,
+                       fail: float = 2.0, times_s=None, channel=None) -> CheckResult:
+    """#9 Stationarity over a window of M frames.
+
+    z_mean[k]   = whitened_change(R_k, R_mean, R_mean, K) / (1 - 1/M)
+    z_consec[k] = whitened_change(R_k, R_k+1, (R_k + R_k+1)/2, K/2)
+    Both are ~c for a stationary scene (c = 1 for Gaussian data, slightly more
+    after 4-bit quantization). The baseline c is the median of z_consec, and two
+    ratios are graded (worst of both):
+      step   max_k z_consec[k] / c   -> abrupt change between consecutive frames
+      global median(z_mean) / c      -> scene differs across the window
+                                        (events covering part of it, drifts)
+    """
+    z_mean, z_consec = np.asarray(z_mean, float), np.asarray(z_consec, float)
+    c = float(np.median(z_consec))
+    r = z_consec / c
+    k = int(np.argmax(r))
+    step = float(r[k])
+    glob = float(np.median(z_mean) / c)
+    value = max(step, glob)
+    when = f" (t = {times_s[k]:.3f}-{times_s[k + 1]:.3f} s)" if times_s is not None else ""
+    name = "stationarity" if channel is None else f"stationarity[{channel}]"
+    return CheckResult(
+        name=name, status=_grade(value, warn, fail), value=value,
+        threshold=f"max(step, global) < {warn} (WARN < {fail}); ~1 if stationary",
+        note=f"step = {step:.2f} between frames {k} and {k + 1}{when}; "
+             f"global = {glob:.2f}; baseline c = {c:.3f}",
+        details={"step": step, "global": glob, "baseline": c, "worst_pair": k,
+                 "z_mean": z_mean, "z_consec": z_consec},
+    )
+
+
+def check_on_off(R_on: np.ndarray, K_on: float, R_off_a: np.ndarray, R_off_b: np.ndarray,
+                 K_off_half: float, d: np.ndarray, warn: float = 1.25, fail: float = 2.0,
+                 channel=None) -> CheckResult:
+    """#10 The off-pulse covariance represents the on-pulse interference.
+
+    R_off = (R_off_a + R_off_b) / 2 from two halves of the off window (K_off_half
+    samples each). After whitening by R_off, Delta = R_on - R_off should contain
+    only the desired signal alpha b b^H (b = R_off^(-1/2) d, d the look-direction
+    steering vector) plus estimation noise. The residual is normalized by its
+    Gaussian expectation, tr(R_off^-1 R_on)^2 / K_on + N^2 / K_off, and divided by
+    the baseline from the two off halves (same statistic, pure estimation noise,
+    which absorbs the quantization bias), so the ratio is ~1 when the
+    interference is unchanged. A change of interferer power in the same direction
+    barely moves the ratio, consistently with MVDR, whose nulls depend on the
+    interference directions. alpha is the excess power per element in the look
+    direction (in units of R).
+    """
+    N = d.size
+    R_off = 0.5 * (R_off_a + R_off_b)
+    L = np.linalg.cholesky(R_off)
+    Dw = np.linalg.solve(L, R_on - R_off)
+    Dw = np.linalg.solve(L, Dw.conj().T).conj().T
+    b = np.linalg.solve(L, d)
+    bb = np.real(np.vdot(b, b))
+    alpha_w = float(np.real(np.vdot(b, Dw @ b)) / bb**2)
+    resid = Dw - alpha_w * np.outer(b, b.conj())
+    K_off = 2.0 * K_off_half
+    # Expected ||residual||^2 for Gaussian estimation noise: for an estimate of R
+    # with K samples whitened by R_off, E||W||^2 = tr(R_off^-1 R)^2 / K, so the
+    # on window (which also contains the signal) contributes tr(R_off^-1 R_on)^2 / K_on.
+    t_on = float(np.real(np.trace(np.linalg.solve(R_off, R_on))))
+    expected = t_on**2 / K_on + N**2 / K_off
+    z = float(np.sum(np.abs(resid) ** 2) / expected)
+    base = whitened_change(R_off_a, R_off_b, R_off, K_off_half / 2.0)
+    ratio = z / base
+    alpha = float(np.real(np.vdot(d, (R_on - R_off) @ d)) / N**2)
+    name = "on_off" if channel is None else f"on_off[{channel}]"
+    note = (f"residual z = {z:.3f}, off-window baseline = {base:.3f}; excess power in look "
+            f"direction alpha = {alpha:.3g}; K_on = {K_on:.0f}, K_off = {K_off:.0f}")
+    if alpha <= 0:
+        note += "; no excess power in the look direction during the on window"
+    return CheckResult(
+        name=name, status=_grade(ratio, warn, fail), value=ratio,
+        threshold=f"residual / baseline < {warn} (WARN < {fail}); ~1 if unchanged",
+        note=note, details={"alpha": alpha, "z": z, "baseline": base},
+    )
+
+
 def format_results(results: list[CheckResult]) -> str:
     """Plain-text table of check results."""
     w = max([16] + [len(r.name) for r in results])

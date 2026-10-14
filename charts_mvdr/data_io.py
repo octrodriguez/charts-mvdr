@@ -34,8 +34,9 @@ FRAME_NAME_RE = re.compile(r"^(?P<window>.+)_(?P<index>\d{7})\.bin$")
 def read_window_meta(frame_path):
     """Read the metadata of the window a frame belongs to (<window>_meta.h5).
 
-    Returns a dict with frequencies and antenna positions, or None if the
-    metadata file is not found next to the frame.
+    Returns a dict with frequencies, antenna positions and, when available,
+    "frame_time_s" ({frame index: time [s]}), or None if the metadata file is not
+    found next to the frame.
     """
     frame_path = Path(frame_path)
     m = FRAME_NAME_RE.match(frame_path.name)
@@ -45,11 +46,16 @@ def read_window_meta(frame_path):
     if not meta_path.exists():
         return None
     with h5py.File(meta_path, "r") as f:
-        return {
+        meta = {
             "frequencies_mhz": f["frequencies_mhz"][:],
             "antenna_pos_x_m": f["antenna_pos_x_m"][:],
             "antenna_pos_y_m": f["antenna_pos_y_m"][:],
         }
+        if "frames/timestamp_s" in f and "frames/output_file_index" in f:
+            # {output frame index: time since window start [s]}
+            meta["frame_time_s"] = dict(zip(f["frames/output_file_index"][:].astype(int),
+                                            f["frames/timestamp_s"][:].astype(float)))
+        return meta
 
 
 def read_astron_correlation(path, num_freq: int, num_ant: int,
