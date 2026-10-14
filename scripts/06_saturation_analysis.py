@@ -20,6 +20,10 @@ Example:
       --window-dir $SCRATCH/data/sim_test/clean_v1/charts_sim_64ant \\
       --corr-dir $SCRATCH/data/kotekan_corr/charts_sim_64ant_<jobid> \\
       --out $SCRATCH/data/figs/saturation
+
+For time-limited events, restrict the frames with --t-range so that the quantizer
+operating point is the same in every frame used: the measured g^2 is a linear
+average over frames, whereas the prediction from the mean rail fraction is not.
 """
 
 from __future__ import annotations
@@ -60,6 +64,8 @@ def main() -> None:
     ap.add_argument("--corr-dir", type=Path, default=None,
                     help="Kotekan correlation dumps (default: correlate the baseband frames)")
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--t-range", type=float, nargs=2, default=None, metavar=("T0", "T1"),
+                    help="use only frames with timestamp in [T0, T1] s (time-limited events)")
     ap.add_argument("--look", type=float, nargs=2, default=None, metavar=("L", "M"))
     ap.add_argument("--samples", type=int, default=1536)
     ap.add_argument("--clean-rail", type=float, default=WARN_RAIL,
@@ -71,10 +77,19 @@ def main() -> None:
     with h5py.File(meta_path, "r") as f:
         x, y = f["antenna_pos_x_m"][:], f["antenna_pos_y_m"][:]
         freq_hz = f["frequencies_mhz"][:] * 1e6
+        frame_time = (dict(zip(f["frames/output_file_index"][:].astype(int),
+                               f["frames/timestamp_s"][:].astype(float)))
+                      if "frames/timestamp_s" in f else None)
     N, F = x.size, freq_hz.size
     window = args.window or args.window_dir.name
     bb = frames(args.window_dir, window)
-    idx = sorted(bb)[: args.max_frames]
+    idx = sorted(bb)
+    if args.t_range is not None:
+        if frame_time is None:
+            raise SystemExit("--t-range needs frames/timestamp_s in the window metadata")
+        t0, t1 = args.t_range
+        idx = [k for k in idx if t0 <= frame_time.get(k, -1.0) <= t1]
+    idx = idx[: args.max_frames]
     if not idx:
         raise SystemExit("no baseband frames found")
 
@@ -162,7 +177,8 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     np.savez(args.out / "saturation_summary.npz", freq_hz=freq_hz, std_out=std_out,
              f_rail=f_rail, sigma_in=sigma_in, g2_pred=g2_pred, g2_meas=g2_meas,
-             look=np.array(look), frames=np.array(idx))
+             look=np.array(look), frames=np.array(idx),
+             t_range=np.array(args.t_range if args.t_range else [np.nan, np.nan]))
 
     fmhz = freq_hz / 1e6
     fig, ax = plt.subplots(3, 1, figsize=(10, 9), sharex=True)

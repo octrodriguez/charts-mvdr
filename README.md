@@ -111,6 +111,7 @@ jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
   correlate_kotekan.sh          # Slurm: Kotekan correlator on a window + comparison
+  analyze_window.sh             # Slurm: 05 and 06 on a correlated window (runs from a text file)
 tests/                          # pytest suite (no external data needed)
 tools/
   export_md.py                  # export tracked source files as one Markdown bundle
@@ -155,6 +156,10 @@ python test_charts/charts_sim.py generate --duration-s 5 --antennas 64 --num-fre
 # Build Kotekan and correlate a window (GPU, from trig-login01)
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir> jobs/correlate_kotekan.sh
+
+# MVDR and saturation analysis of the correlated window (CPU; run list in a text file)
+sbatch --export=ALL,WINDOW_DIR=<window_dir>,CORR_DIR=<dump_dir>,OUT_DIR=<out_dir>,LOOK="L M",RUNS_FILE=<runs.txt> \
+    jobs/analyze_window.sh
 ```
 
 Dataset paths are always passed as command-line arguments; no path is

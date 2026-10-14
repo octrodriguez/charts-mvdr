@@ -11,13 +11,16 @@
 # Usage (from trig-login01, in $SCRATCH/charts-mvdr):
 #   sbatch --export=ALL,KOTEKAN_SRC=$SCRATCH/kotekan-wt/integration,WINDOW_DIR=$SCRATCH/data/sim_test/quick_day_gsun \
 #          jobs/correlate_kotekan.sh
+# Optional: LABEL names the output directory (default: WINDOW), useful when several
+# windows share the same frame prefix.
 set -euo pipefail
 SRC="${KOTEKAN_SRC:?set KOTEKAN_SRC to the Kotekan worktree with a built binary}"
 WIN_DIR="${WINDOW_DIR:?set WINDOW_DIR to the directory with <window>_%07d.bin frames}"
 WINDOW="${WINDOW:-$(basename "$WIN_DIR")}"
 NUM_FREQ="${NUM_FREQ:-336}"
 NUM_ANT="${NUM_ANT:-64}"
-OUT="$SCRATCH/data/kotekan_corr/${WINDOW}_${SLURM_JOB_ID}"
+LABEL="${LABEL:-$WINDOW}"
+OUT="$SCRATCH/data/kotekan_corr/${LABEL}_${SLURM_JOB_ID}"
 MVDR="$SCRATCH/charts-mvdr"
 
 module load StdEnv/2023 gcc/12.3 cuda/12.6 boost hdf5
