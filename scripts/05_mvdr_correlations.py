@@ -4,8 +4,25 @@
 Stage 1 (localization): DFT image summed over clean channels -> look direction
 (brightest source), unless --look is given. DFT and Capon images are also made
 for each analysis channel to locate interferers.
+The coarse image peak is refined with successively finer local grids
+(beamforming.refine_peak): a look direction on the coarse grid node is off by up
+to half a grid step, enough for MVDR to partially null the source itself.
 Stage 2 (MVDR): for each analysis channel, DFT and MVDR weights towards the look
 direction; output power and null depth towards each interferer.
+
+Power budget: the powers of the look-direction source and the interferers are
+fitted to the cross-correlations (beamforming.fit_source_powers; the diagonal is
+excluded, so noise does not bias them). The output power of each beamformer is
+then split as P = noise + signal + leak + residual (beamforming.power_budget):
+  noise     sum_n |w_n|^2 sigma_n^2, with the measured per-antenna noise
+  leak      sum_i p_i |w^H a_i|^2 over the interferers
+  signal    P - noise - leak, the noise-free output attributed to the look source
+  retained  signal / p_look: 1 for an ideal beamformer; < 1 for MVDR self-nulling
+            (steering mismatch, finite K); > 1 when unmodelled power leaks in.
+P_MVDR / P_DFT alone is ambiguous: it drops both when MVDR loses signal and when
+the DFT beam collects interference through its sidelobes. For moving sources
+(LEO) the fixed event position is only approximate, and the fit and leak are
+biased; use short time ranges.
 
 Inputs are Kotekan cudaCorrelatorAstron dumps (corr_%07d.bin, read with
 read_astron_correlation) and the window metadata (<window>_meta.h5) with antenna
@@ -33,8 +50,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from charts_mvdr.beamforming import (beam_power, dft_weights, lm_grid,
-                                     mvdr_weights, steering_vectors)
+from charts_mvdr.beamforming import (beam_power, dft_weights, fit_source_powers, lm_grid,
+                                     mvdr_weights, power_budget, refine_peak,
+                                     steering_vectors)
 from charts_mvdr.data_io import read_astron_correlation
 
 CORR_RE = re.compile(r"^(?P<prefix>.+)_(?P<index>\d{7})\.bin$")
@@ -97,6 +115,8 @@ def main() -> None:
                     help="reference for --loading (default: noise floor, median eigenvalue)")
     ap.add_argument("--samples", type=int, default=1536)
     ap.add_argument("--grid", type=int, default=161)
+    ap.add_argument("--no-refine", action="store_true",
+                    help="keep the coarse grid peak as look direction (no local refinement)")
     ap.add_argument("--out", type=Path, default=Path("mvdr_correlations"))
     args = ap.parse_args()
 
@@ -135,24 +155,32 @@ def main() -> None:
         clean = [c for c in range(num_freq) if c not in rfi_by_ch][::8]
         img = sum(image(R[c], freq_hz[c], x, y, gl, gm) for c in clean)
         look = peak(img, gl, gm)
-        print(f"look direction (DFT peak over {len(clean)} clean channels): "
-              f"l = {look[0]:+.3f}, m = {look[1]:+.3f}")
+        print(f"look direction (DFT peak over {len(clean)} clean channels, grid): "
+              f"l = {look[0]:+.4f}, m = {look[1]:+.4f}")
+        if not args.no_refine:
+            step = 2.0 / (args.grid - 1)
+            look = refine_peak(
+                lambda L, M: sum(image(R[c], freq_hz[c], x, y, L, M) for c in clean),
+                *look, step=step)
+            print(f"look direction (refined):                         "
+                  f"l = {look[0]:+.4f}, m = {look[1]:+.4f}")
     else:
         look = tuple(args.look)
-        print(f"look direction (given): l = {look[0]:+.3f}, m = {look[1]:+.3f}")
+        print(f"look direction (given): l = {look[0]:+.4f}, m = {look[1]:+.4f}")
 
-    # Stage 2: MVDR per channel
+    # Stage 2: MVDR per channel, with the power budget of each beamformer
     args.out.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'ch':>4} {'MHz':>7} {'P_DFT':>9} {'P_MVDR':>9} {'MVDR/DFT':>9} "
-          f"{'null_DFT dB':>11} {'null_MVDR dB':>12}  interferer (l, m)")
-    rows = []
+    print("\nPowers in units of R per sample; signal = P - noise - leak; "
+          "retained = signal / p_look")
+    print(f"\n{'ch':>4} {'MHz':>7} {'beam':<5} {'P':>8} {'noise':>8} {'leak':>8} "
+          f"{'signal':>8} {'retained':>8} {'WNG dB':>7}  nulls [dB]")
+    summary = {k: [] for k in ("ch", "freq_mhz", "p_look", "p_int", "int_lm",
+                               "noise_mean", "dft", "mvdr")}
     for ch in args.channels:
         f = freq_hz[ch]
         d = steering_vectors(*look, f, x, y)
         w_dft = dft_weights(d)[0]
         w_mv = mvdr_weights(R[ch], d, loading=args.loading, loading_ref=args.loading_ref)[0]
-        p_dft = beam_power(R[ch], w_dft[None])[0]
-        p_mv = beam_power(R[ch], w_mv[None])[0]
         if events:   # simulation: ground truth; clean channels have no interferer
             ints = rfi_by_ch.get(ch, [])
         else:        # real data: strongest DFT peak outside the main beam of the look direction
@@ -160,17 +188,33 @@ def main() -> None:
             extent = np.ptp(np.hypot(x - x.mean(), y - y.mean())) * 2 or 1.0
             far = np.hypot(gl - look[0], gm - look[1]) > 2.0 * (3e8 / f) / extent
             ints = [(*peak(np.where(far, img, -np.inf), gl, gm), "dft-peak")]
-        if not ints:
-            print(f"{ch:4d} {f / 1e6:7.1f} {p_dft:9.4f} {p_mv:9.4f} {p_mv / p_dft:9.3f} "
-                  f"{'-':>11} {'-':>12}  (no interferer)")
-            rows.append((ch, f / 1e6, p_dft, p_mv, np.nan, np.nan, np.nan, np.nan))
-        for li, mi, kind in ints:
-            a = steering_vectors(li, mi, f, x, y)[0]
-            n_dft = 10 * np.log10(np.abs(np.vdot(w_dft, a)) ** 2 + 1e-30)
-            n_mv = 10 * np.log10(np.abs(np.vdot(w_mv, a)) ** 2 + 1e-30)
-            print(f"{ch:4d} {f / 1e6:7.1f} {p_dft:9.4f} {p_mv:9.4f} {p_mv / p_dft:9.3f} "
-                  f"{n_dft:11.1f} {n_mv:12.1f}  ({li:+.3f}, {mi:+.3f}) {kind}")
-            rows.append((ch, f / 1e6, p_dft, p_mv, n_dft, n_mv, li, mi))
+
+        A_int = (steering_vectors([i[0] for i in ints], [i[1] for i in ints], f, x, y)
+                 if ints else np.zeros((0, num_ant), dtype=complex))
+        A = np.vstack([d, A_int])
+        p, noise = fit_source_powers(R[ch], A)
+        p_int_str = ", ".join(f"{pi:.3g} at ({li:+.3f}, {mi:+.3f}) {kind}"
+                              for pi, (li, mi, kind) in zip(p[1:], ints)) or "none"
+        print(f"{ch:4d} {f / 1e6:7.1f} fit: p_look = {p[0]:.4f}, "
+              f"noise = {noise.mean():.3f} (per antenna {noise.min():.2f}-{noise.max():.2f}); "
+              f"interferers: {p_int_str}")
+        beams = {}
+        for name, w in (("DFT", w_dft), ("MVDR", w_mv)):
+            b = power_budget(R[ch], w, A, p, noise)
+            leak = float(b["source"][1:].sum())
+            signal = b["total"] - b["noise"] - leak
+            nulls = 10 * np.log10(np.abs(A_int.conj() @ w) ** 2 + 1e-30)
+            beams[name] = {"P": b["total"], "noise": b["noise"], "leak": leak,
+                           "signal": signal, "retained": signal / p[0],
+                           "wng_db": 10 * np.log10(b["wng"]), "nulls_db": nulls}
+            null_str = " ".join(f"{v:6.1f}" for v in nulls) or "-"
+            print(f"{'':4} {'':7} {name:<5} {b['total']:8.4f} {b['noise']:8.4f} {leak:8.4f} "
+                  f"{signal:8.4f} {signal / p[0]:8.3f} {beams[name]['wng_db']:7.2f}  {null_str}")
+        summary["ch"].append(ch); summary["freq_mhz"].append(f / 1e6)
+        summary["p_look"].append(p[0]); summary["p_int"].append(p[1:])
+        summary["int_lm"].append([(li, mi) for li, mi, _ in ints])
+        summary["noise_mean"].append(noise.mean())
+        summary["dft"].append(beams["DFT"]); summary["mvdr"].append(beams["MVDR"])
 
         # Figure: DFT and Capon images with look and interferer directions
         fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
@@ -190,8 +234,17 @@ def main() -> None:
         fig.savefig(args.out / f"images_ch{ch:03d}.png", dpi=130)
         plt.close(fig)
 
-    np.savez(args.out / "mvdr_summary.npz", rows=np.array(rows), look=np.array(look),
-             frames=np.array(idx), loading=args.loading, loading_ref=args.loading_ref)
+    flat = {"ch": np.array(summary["ch"]), "freq_mhz": np.array(summary["freq_mhz"]),
+            "p_look": np.array(summary["p_look"]), "noise_mean": np.array(summary["noise_mean"])}
+    for beam in ("dft", "mvdr"):
+        for key in ("P", "noise", "leak", "signal", "retained", "wng_db"):
+            flat[f"{beam}_{key}"] = np.array([b[key] for b in summary[beam]])
+    np.savez(args.out / "mvdr_summary.npz", **flat, look=np.array(look), frames=np.array(idx),
+             loading=args.loading, loading_ref=args.loading_ref,
+             p_int=np.array(summary["p_int"], dtype=object),
+             int_lm=np.array(summary["int_lm"], dtype=object),
+             nulls_dft=np.array([b["nulls_db"] for b in summary["dft"]], dtype=object),
+             nulls_mvdr=np.array([b["nulls_db"] for b in summary["mvdr"]], dtype=object))
     print(f"\nfigures and summary -> {args.out}")
 
 

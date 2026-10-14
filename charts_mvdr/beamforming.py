@@ -89,3 +89,70 @@ def lm_grid(n: int = 201, extent: float = 1.0):
     L, M = np.meshgrid(ax, ax)
     mask = L ** 2 + M ** 2 < 1.0
     return L[mask], M[mask], mask
+
+
+def refine_peak(fn, l0: float, m0: float, step: float, n: int = 7, n_iter: int = 5):
+    """Maximize fn(l, m) near (l0, m0) with successively finer local grids.
+
+    fn takes arrays of l and m and returns one value per direction. Each
+    iteration evaluates an n x n grid spanning +-step around the current best
+    point (visible region only) and shrinks step to the grid spacing, so the
+    final resolution is step * (2 / (n - 1)) ** n_iter. Starting from a coarse
+    image peak, step should be the coarse grid spacing.
+    """
+    l, m = float(l0), float(m0)
+    for _ in range(n_iter):
+        ax = np.linspace(-step, step, n)
+        L, M = np.meshgrid(l + ax, m + ax)
+        L, M = L.ravel(), M.ravel()
+        vis = L ** 2 + M ** 2 < 1.0
+        k = int(np.argmax(fn(L[vis], M[vis])))
+        l, m = float(L[vis][k]), float(M[vis][k])
+        step = 2.0 * step / (n - 1)
+    return l, m
+
+
+def fit_source_powers(R: np.ndarray, A: np.ndarray):
+    """Least-squares powers of sources with known steering vectors.
+
+    Fits the off-diagonal entries of R with sum_k p_k a_k a_k^H, A of shape
+    (n_src, N). The diagonal is excluded, so per-antenna noise (and any
+    uncorrelated quantization distortion) does not bias the powers. Sources
+    that are missing from A, move during the integration or have steering
+    errors bias the fit; power_budget reports what the model leaves unexplained.
+
+    Returns (p, noise): p (n_src,) powers in the units of R, and noise (N,) the
+    per-antenna remainder diag(R) - sum_k p_k |a_kn|^2.
+    """
+    A = np.atleast_2d(A)
+    N = R.shape[0]
+    off = ~np.eye(N, dtype=bool)
+    T = np.stack([np.outer(a, a.conj())[off] for a in A], axis=1)
+    T_ri = np.concatenate([T.real, T.imag])
+    b_ri = np.concatenate([R[off].real, R[off].imag])
+    p = np.linalg.lstsq(T_ri, b_ri, rcond=None)[0]
+    noise = np.real(np.diag(R)) - (np.abs(A) ** 2 * p[:, None]).sum(axis=0)
+    return p, noise
+
+
+def power_budget(R: np.ndarray, w: np.ndarray, A: np.ndarray, p: np.ndarray,
+                 noise: np.ndarray) -> dict:
+    """Split the output power w^H R w of one beamformer with a source model.
+
+    A (n_src, N) and p (n_src,) are the modelled sources and noise (N,) the
+    per-antenna noise, e.g. from fit_source_powers. Returns
+      total     w^H R w
+      noise     sum_n |w_n|^2 noise_n (white-noise term, uses the measured
+                per-antenna noise rather than a single floor)
+      source    p_k |w^H a_k|^2 for each source (n_src,)
+      residual  total - noise - sum(source): power the model does not explain
+      wng       N ||w||^2, white-noise gain relative to the DFT (1 for w = a / N)
+    """
+    A = np.atleast_2d(A)
+    total = float(np.real(np.vdot(w, R @ w)))
+    noise_term = float(np.sum(np.abs(w) ** 2 * noise))
+    source = np.asarray(p) * np.abs(A.conj() @ w) ** 2
+    return {"total": total, "noise": noise_term, "source": source,
+            "residual": total - noise_term - float(source.sum()),
+            "wng": float(w.size * np.sum(np.abs(w) ** 2))}
+

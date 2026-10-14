@@ -68,3 +68,56 @@ def test_invalid_reference():
     R, a = covariance(1.0)
     with pytest.raises(ValueError):
         mvdr_weights(R, a, 0.1, loading_ref="median")
+
+
+# --- look refinement and power budget ----------------------------------------
+
+from charts_mvdr.beamforming import (beam_power, dft_weights, fit_source_powers,  # noqa: E402
+                                     power_budget, refine_peak, steering_vectors)
+
+LOOK_TRUE = (0.4677, 0.4801)
+
+
+def scene(noise_per_ant=None, rfi_power=30.0):
+    scn = sc.Scenario(freqs_hz=[F0], noise_sigma=1.7,
+                      sources=[sc.Source(*LOOK_TRUE, power=0.45, name="sun"),
+                               sc.Source(*RFI, power=rfi_power, name="rfi")])
+    R = sc.analytic_covariance(scn)[0]
+    if noise_per_ant is not None:
+        R = R + np.diag(noise_per_ant)
+    x, y = scn.positions[:, 0], scn.positions[:, 1]
+    return R, x, y
+
+
+def test_refine_peak_recovers_off_grid_source():
+    # Clean channel, as in 05: in an RFI channel the DFT sidelobes of the
+    # interferer shift the peak (by ~0.015 in l, m for this scene).
+    R, x, y = scene(rfi_power=0.0)
+    def dft_power(L, M):
+        return beam_power(R, dft_weights(steering_vectors(L, M, F0, x, y)))
+    l, m = refine_peak(dft_power, 0.4625, 0.475, step=0.0125)
+    assert abs(l - LOOK_TRUE[0]) < 2e-4 and abs(m - LOOK_TRUE[1]) < 2e-4
+
+
+def test_fit_source_powers_ignores_per_antenna_noise():
+    extra = np.linspace(0.0, 3.0, 64)
+    R, x, y = scene(noise_per_ant=extra)
+    A = steering_vectors([LOOK_TRUE[0], RFI[0]], [LOOK_TRUE[1], RFI[1]], F0, x, y)
+    p, noise = fit_source_powers(R, A)
+    np.testing.assert_allclose(p, [0.45, 30.0], rtol=1e-9)
+    np.testing.assert_allclose(noise, 2 * 1.7**2 + extra, rtol=1e-9)
+
+
+@pytest.mark.parametrize("beam", ["dft", "mvdr"])
+def test_power_budget_closes_with_exact_model(beam):
+    R, x, y = scene(noise_per_ant=np.linspace(0.0, 3.0, 64))
+    A = steering_vectors([LOOK_TRUE[0], RFI[0]], [LOOK_TRUE[1], RFI[1]], F0, x, y)
+    d = A[:1]
+    w = dft_weights(d)[0] if beam == "dft" else mvdr_weights(R, d)[0]
+    p, noise = fit_source_powers(R, A)
+    b = power_budget(R, w, A, p, noise)
+    assert b["residual"] == pytest.approx(0.0, abs=1e-9)
+    assert b["source"][0] == pytest.approx(0.45)          # distortionless: |w^H d| = 1
+    assert b["wng"] >= 1.0 - 1e-12
+    if beam == "mvdr":
+        assert b["source"][1] < 1e-6 * b["source"][0]     # interferer nulled

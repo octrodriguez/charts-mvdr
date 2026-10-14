@@ -62,6 +62,9 @@ Trillium the build removes `/usr/lib64` from the RPATH of the binaries: CMake
 puts it first, which loads the OS glibc instead of the StdEnv/2023 one and the
 binary fails with `GLIBC_2.35 not found`.
 
+Reference commit: `kotekan_charts` at `d88295e4` (Release build). With it the
+GPU correlator reproduces `np_correlator` exactly on a 99-frame simulated window.
+
 ## Installation
 
 Install this repository as an editable package in the same environment as
@@ -105,7 +108,7 @@ scripts/
   02_snapshot_view.py           # per-source snapshot visualization (in progress)
   03_validate_mvdr.py           # SINR sweeps on CPU-tier data with ground truth
   04_compare_correlators.py     # Kotekan GPU correlator vs np_correlator
-  05_mvdr_correlations.py       # two-stage DFT localization + MVDR on correlation dumps
+  05_mvdr_correlations.py       # DFT localization (refined) + MVDR on correlation dumps, power budget
   06_saturation_analysis.py     # 4-bit saturation per channel vs Bussgang prediction
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
