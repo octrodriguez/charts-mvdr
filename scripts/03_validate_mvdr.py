@@ -59,14 +59,8 @@ def w_dft(a: np.ndarray) -> np.ndarray:
 
 
 def w_mvdr(R: np.ndarray, a: np.ndarray, loading_abs: float = 0.0) -> np.ndarray:
-    """MVDR weights with absolute diagonal loading (same units as R).
-
-    ``beamforming.mvdr_weights`` takes loading as a fraction of trace(R)/N,
-    which scales with the interference power; convert here so the sweep is
-    expressed relative to the noise floor.
-    """
-    frac = loading_abs / (np.real(np.trace(R)) / R.shape[0]) if loading_abs else 0.0
-    return mvdr_weights(R, a, loading=frac)[0]
+    """MVDR weights with absolute diagonal loading (same units as R)."""
+    return mvdr_weights(R, a, loading=loading_abs, loading_ref="absolute")[0]
 
 
 def rhat(scn, K, rng, quantize=None):

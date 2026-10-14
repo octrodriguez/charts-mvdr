@@ -92,7 +92,9 @@ def main() -> None:
     ap.add_argument("--t-range", type=float, nargs=2, default=None, metavar=("T0", "T1"),
                     help="use only frames with timestamp in [T0, T1] s")
     ap.add_argument("--loading", type=float, default=0.0,
-                    help="diagonal loading, fraction of trace(R)/N (beamforming convention)")
+                    help="diagonal loading, in units of --loading-ref (e.g. 10 with 'noise')")
+    ap.add_argument("--loading-ref", choices=["trace", "noise", "absolute"], default="noise",
+                    help="reference for --loading (default: noise floor, median eigenvalue)")
     ap.add_argument("--samples", type=int, default=1536)
     ap.add_argument("--grid", type=int, default=161)
     ap.add_argument("--out", type=Path, default=Path("mvdr_correlations"))
@@ -148,7 +150,7 @@ def main() -> None:
         f = freq_hz[ch]
         d = steering_vectors(*look, f, x, y)
         w_dft = dft_weights(d)[0]
-        w_mv = mvdr_weights(R[ch], d, loading=args.loading)[0]
+        w_mv = mvdr_weights(R[ch], d, loading=args.loading, loading_ref=args.loading_ref)[0]
         p_dft = beam_power(R[ch], w_dft[None])[0]
         p_mv = beam_power(R[ch], w_mv[None])[0]
         if events:   # simulation: ground truth; clean channels have no interferer
@@ -189,7 +191,7 @@ def main() -> None:
         plt.close(fig)
 
     np.savez(args.out / "mvdr_summary.npz", rows=np.array(rows), look=np.array(look),
-             frames=np.array(idx), loading=args.loading)
+             frames=np.array(idx), loading=args.loading, loading_ref=args.loading_ref)
     print(f"\nfigures and summary -> {args.out}")
 
 
