@@ -4,11 +4,9 @@
 Per channel (averaged over the selected frames and antennas):
   std_out   standard deviation per real component of the 4-bit samples [LSB]
   f_rail    fraction of components at the rails (|x| >= 7)
-  sigma_in  input std per component: from f_rail assuming Gaussian input,
-            f_rail = 2 Q(6.5 / sigma_in) (rounding to +/-7 starts at 6.5), where
-            f_rail >= 1e-4; otherwise sqrt(std_out^2 - 1/12)
-  g2_pred   Bussgang prediction of the gain on a weak signal's cross-power:
-            g = erf(L / (sqrt(2) sigma_in)) with saturation level L = 7.5
+  sigma_in  input std per component (charts_mvdr.quantization.estimate_sigma_in)
+  g2_pred   Bussgang prediction of the gain on a weak signal's cross-power,
+            g^2 = erf(7.5 / (sqrt(2) sigma_in))^2 (charts_mvdr.quantization)
   g2_meas   measured gain: power of the look-direction source fitted to the
             cross-correlations (rank-1 templates for the source and, if present,
             the dominant interferer), relative to the nearest channels with
@@ -28,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import re
-from math import erf, sqrt
 from pathlib import Path
 
 import h5py
@@ -36,16 +33,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.special import erfcinv
-
+from charts_mvdr import quantization as q
 from charts_mvdr.beamforming import beam_power, dft_weights, lm_grid, steering_vectors
 from charts_mvdr.data_io import read_astron_correlation, read_baseband_frame
 from charts_mvdr.np_correlator import correlate
 
 FRAME_RE = re.compile(r"^(?P<prefix>.+)_(?P<index>\d{7})\.bin$")
-L_SAT = 7.5          # saturation level of the [-7, 7] quantizer with rounding
-RAIL_START = 6.5     # inputs above this round to the rail value 7
-WARN_RAIL = 1e-3     # checks.check_saturation WARN threshold
+WARN_RAIL = 1e-3     # reference rail fraction for the "clean" channel selection
 
 
 def frames(directory: Path, prefix: str | None = None) -> dict[int, Path]:
@@ -55,16 +49,6 @@ def frames(directory: Path, prefix: str | None = None) -> dict[int, Path]:
         if m and (prefix is None or m["prefix"] == prefix):
             out[int(m["index"])] = p
     return out
-
-
-def sigma_from_rail(f_rail: np.ndarray) -> np.ndarray:
-    """Invert f_rail = 2 Q(6.5 / sigma) = erfc(6.5 / (sqrt(2) sigma))."""
-    f = np.clip(f_rail, 1e-12, 1 - 1e-12)
-    return RAIL_START / (np.sqrt(2.0) * erfcinv(f))
-
-
-def bussgang_g2(sigma_in: np.ndarray) -> np.ndarray:
-    return np.array([erf(L_SAT / (sqrt(2.0) * s)) ** 2 for s in np.atleast_1d(sigma_in)])
 
 
 def main() -> None:
@@ -101,7 +85,7 @@ def main() -> None:
     for k in idx:
         V = read_baseband_frame(bb[k], F, N, args.samples)
         comps = np.concatenate([V.real, V.imag], axis=0)          # (2T, F, N)
-        n_rail += np.sum(np.abs(comps) >= 7, axis=(0, 2))
+        n_rail += np.sum(np.abs(comps) >= q.RAIL, axis=(0, 2))
         s2 += np.sum(comps.astype(np.float64) ** 2, axis=(0, 2))
         if args.corr_dir is None:
             R += correlate(V.astype(np.complex128))
@@ -158,11 +142,8 @@ def main() -> None:
             ref[c] = np.mean(cross[near])
     g2_meas = cross / ref
 
-    # Rail-based estimate where saturation is measurable; elsewhere the output std
-    # (minus uniform quantization noise, 1/12 LSB^2) is an unbiased estimate.
-    sigma_in = np.where(f_rail >= 1e-4, sigma_from_rail(f_rail),
-                        np.sqrt(np.maximum(std_out**2 - 1.0 / 12.0, 1e-6)))
-    g2_pred = bussgang_g2(sigma_in)
+    sigma_in = q.estimate_sigma_in(f_rail, std_out)
+    g2_pred = q.bussgang_gain2(sigma_in)
 
     flagged = np.flatnonzero(f_rail >= 1e-2)
     print(f"\nrail fraction: median {np.median(f_rail):.2e}; channels >= {WARN_RAIL:g}: "
@@ -170,7 +151,7 @@ def main() -> None:
     print(f"std per component: median {np.median(std_out):.2f} LSB "
           f"(range {std_out.min():.2f}-{std_out.max():.2f}); "
           f"f_rail = {WARN_RAIL:g} corresponds to sigma_in = "
-          f"{float(sigma_from_rail(np.array([WARN_RAIL]))[0]):.2f} LSB")
+          f"{float(q.sigma_from_rail(WARN_RAIL)):.2f} LSB")
     print(f"\n{'ch':>4} {'MHz':>7} {'std_out':>8} {'f_rail':>9} {'sigma_in':>9} "
           f"{'g2_pred':>8} {'g2_meas':>8}")
     show = np.union1d(flagged, np.argsort(std_out)[-5:])
@@ -202,7 +183,7 @@ def main() -> None:
 
     fig, ax = plt.subplots(figsize=(5.5, 5))
     s = np.geomspace(0.5, 20, 200)
-    ax.plot(s, bussgang_g2(s), "k-", label=r"$\mathrm{erf}^2(L/\sqrt{2}\sigma)$, $L=7.5$")
+    ax.plot(s, q.bussgang_gain2(s), "k-", label=r"$\mathrm{erf}^2(L/\sqrt{2}\sigma)$, $L=7.5$")
     ok = np.isfinite(g2_meas)
     ax.scatter(sigma_in[ok], g2_meas[ok], s=8, c=np.log10(np.maximum(f_rail[ok], 1e-7)),
                cmap="viridis", label="channels")

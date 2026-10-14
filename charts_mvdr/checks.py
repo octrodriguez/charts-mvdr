@@ -6,6 +6,7 @@ scripts before computing beamformer weights.
 """
 from dataclasses import dataclass, field
 from enum import Enum
+from charts_mvdr import quantization as q
 from charts_mvdr.beamforming import steering_vectors
 import numpy as np
 
@@ -195,27 +196,33 @@ def check_antenna_health(R: np.ndarray, low: float = 0.5, high: float = 2.0,
         details={"ratio": ratio, "outliers": outliers, "dead": dead},
     )
 
-def check_saturation(Vc: np.ndarray, rail: int = 7, warn: float = 1e-3, fail: float = 1e-2,
+def check_saturation(Vc: np.ndarray, warn: float = 0.95, fail: float = 0.80,
                      channel=None) -> CheckResult:
-    """#6 Linearity: fraction of quantized components at the rails (|x| >= rail).
+    """#6 Linearity: expected power gain g^2 on a weak signal (Bussgang model).
 
     Vc holds the 4-bit complex voltages of one channel, shape (time, antenna).
-    Also reports samples at -8 (outside the symmetric [-7, 7] F-engine range)
-    and the quantization noise relative to the per-component variance.
+    sigma_in is estimated from the fraction of components at the rails (or from
+    the output std when there is no measurable saturation) and the gain is
+    g^2 = erf(7.5 / (sqrt(2) sigma_in))^2, see charts_mvdr.quantization.
+    Graded on g^2 (higher is better): defaults correspond to losses of 0.2 dB
+    (WARN) and 1 dB (FAIL). Also reports samples at -8 (outside [-7, 7]).
     """
     comps = np.concatenate([Vc.real.ravel(), Vc.imag.ravel()])
-    frac = float(np.mean(np.abs(comps) >= rail))
+    f_rail = float(np.mean(np.abs(comps) >= q.RAIL))
+    std = float(np.std(comps))
+    sigma_in = float(q.estimate_sigma_in(f_rail, std))
+    g2 = float(q.bussgang_gain2(sigma_in))
     n_m8 = int(np.sum(comps <= -8))
-    var = float(np.var(comps))
-    q_ratio = (1.0 / 12.0) / var if var > 0 else float("nan")
     name = "saturation" if channel is None else f"saturation[{channel}]"
     return CheckResult(
-        name=name, status=_grade(frac, warn, fail), value=frac,
-        threshold=f"fraction at |x| >= {rail} < {warn:g} (WARN < {fail:g})",
-        note=f"std per component = {np.sqrt(var):.2f} LSB; quantization noise = "
-             f"{100 * q_ratio:.1f}% of variance; samples at -8: {n_m8}",
-        details={"fraction": frac, "n_minus8": n_m8, "std": float(np.sqrt(var))},
+        name=name, status=_grade_high(g2, warn, fail), value=g2,
+        threshold=f"g^2 > {warn:g} (WARN > {fail:g})",
+        note=f"loss = {float(q.loss_db(g2)):.2f} dB; sigma_in = {sigma_in:.2f} LSB; "
+             f"std out = {std:.2f} LSB; fraction at rails = {f_rail:.2e}; samples at -8: {n_m8}",
+        details={"gain2": g2, "sigma_in": sigma_in, "fraction": f_rail, "std": std,
+                 "n_minus8": n_m8},
     )
+
 
 def check_degrees_of_freedom(n_sources: int, num_ant: int, warn: float = 0.25,
                              fail: float = 0.5, channel=None) -> CheckResult:

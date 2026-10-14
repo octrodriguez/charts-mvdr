@@ -113,4 +113,5 @@ def test_quantized_frame_feeds_checks():
     scn = scenario(rfi_p=200.0)
     x = sc.simulate_voltages(scn, 1536, rng=0, quantize="asymmetric")
     res = check_saturation(x[:, 0, :])
-    assert res.value > 0 and res.details["n_minus8"] > 0
+    assert res.status.value == "FAIL" and res.value < 0.8   # g^2 for sigma_in ~ 10 LSB
+    assert res.details["n_minus8"] > 0

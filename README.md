@@ -97,6 +97,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   np_correlator.py              # NumPy (CPU) reference correlator
   beamforming.py                # steering vectors, DFT/MVDR weights, (l, m) grid
   checks.py                     # pre-flight checks of MVDR assumptions
+  quantization.py               # 4-bit saturation model (Bussgang gain, input sigma)
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
   00_check_assumptions.py       # runs all checks on a frame, summary per check
