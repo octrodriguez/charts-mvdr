@@ -15,7 +15,7 @@ source "$SCRATCH/charts-utils/.venv/bin/activate"
 export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4
 export MPLBACKEND=Agg
 
-OUT="$SCRATCH/mvdr_validation/full_${SLURM_JOB_ID}"
+OUT="$SCRATCH/data/mvdr_validation/full_${SLURM_JOB_ID}"
 mkdir -p "$OUT"
 git rev-parse --short HEAD > "$OUT/commit.txt"
 

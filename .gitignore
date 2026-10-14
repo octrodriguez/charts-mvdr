@@ -29,3 +29,7 @@ slurm-*.out
 
 # Local helpers
 charts_utils_bundle_*.md
+# Generated artifacts
+*.out
+*_bundle*.md
+github_info_*.md
