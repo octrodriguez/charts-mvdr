@@ -8,6 +8,8 @@ correlator, R_ij = sum_t v_i v_j^*): a plane wave from direction cosines
 
 Verify this convention on real data before using it there.
 """
+from __future__ import annotations
+
 import numpy as np
 
 C_LIGHT = 299_792_458.0  # m/s
@@ -21,6 +23,29 @@ def steering_vectors(l, m, freq_hz: float, pos_x, pos_y) -> np.ndarray:
     y = np.asarray(pos_y, dtype=float)
     delay = (l[:, None] * x[None, :] + m[:, None] * y[None, :]) / C_LIGHT
     return np.exp(-2j * np.pi * freq_hz * delay)
+
+
+def grating_lobes(l0: float, m0: float, freq_hz: float, dx: float, dy: float,
+                  max_order: int = 3) -> list:
+    """Visible grating lobes of a beam steered to (l0, m0) on a rectangular grid.
+
+    On a grid with spacings dx, dy the steering vector is periodic in l with
+    period c / (f dx) and in m with period c / (f dy), so directions
+    (l0 + p c / (f dx), m0 + q c / (f dy)) with integers (p, q) != (0, 0) have
+    exactly the same steering vector as (l0, m0). An interferer there cannot be
+    nulled without nulling the look direction. Only lobes inside the visible
+    region l^2 + m^2 < 1 are returned, as (p, q, l, m) tuples ordered by (p, q).
+    """
+    pl, pm = C_LIGHT / (freq_hz * dx), C_LIGHT / (freq_hz * dy)
+    lobes = []
+    for p in range(-max_order, max_order + 1):
+        for q in range(-max_order, max_order + 1):
+            if p == 0 and q == 0:
+                continue
+            l, m = l0 + p * pl, m0 + q * pm
+            if l * l + m * m < 1.0:
+                lobes.append((p, q, float(l), float(m)))
+    return lobes
 
 
 def dft_weights(A: np.ndarray) -> np.ndarray:
@@ -112,7 +137,7 @@ def refine_peak(fn, l0: float, m0: float, step: float, n: int = 7, n_iter: int =
     return l, m
 
 
-def fit_source_powers(R: np.ndarray, A: np.ndarray):
+def fit_source_powers(R: np.ndarray, A: np.ndarray, fixed: dict | None = None):
     """Least-squares powers of sources with known steering vectors.
 
     Fits the off-diagonal entries of R with sum_k p_k a_k a_k^H, A of shape
@@ -121,16 +146,29 @@ def fit_source_powers(R: np.ndarray, A: np.ndarray):
     that are missing from A, move during the integration or have steering
     errors bias the fit; power_budget reports what the model leaves unexplained.
 
+    fixed maps source indices to known powers: those terms are subtracted from
+    R and only the others are fitted. Needed when steering vectors are (nearly)
+    collinear, e.g. an interferer at a grating lobe of the look direction,
+    where the joint fit cannot split the power between them.
+
     Returns (p, noise): p (n_src,) powers in the units of R, and noise (N,) the
     per-antenna remainder diag(R) - sum_k p_k |a_kn|^2.
     """
     A = np.atleast_2d(A)
     N = R.shape[0]
-    off = ~np.eye(N, dtype=bool)
-    T = np.stack([np.outer(a, a.conj())[off] for a in A], axis=1)
-    T_ri = np.concatenate([T.real, T.imag])
-    b_ri = np.concatenate([R[off].real, R[off].imag])
-    p = np.linalg.lstsq(T_ri, b_ri, rcond=None)[0]
+    fixed = dict(fixed or {})
+    p = np.zeros(A.shape[0])
+    Rf = np.array(R, dtype=complex)
+    for k, pk in fixed.items():
+        p[k] = pk
+        Rf = Rf - pk * np.outer(A[k], A[k].conj())
+    free = [k for k in range(A.shape[0]) if k not in fixed]
+    if free:
+        off = ~np.eye(N, dtype=bool)
+        T = np.stack([np.outer(A[k], A[k].conj())[off] for k in free], axis=1)
+        T_ri = np.concatenate([T.real, T.imag])
+        b_ri = np.concatenate([Rf[off].real, Rf[off].imag])
+        p[free] = np.linalg.lstsq(T_ri, b_ri, rcond=None)[0]
     noise = np.real(np.diag(R)) - (np.abs(A) ** 2 * p[:, None]).sum(axis=0)
     return p, noise
 

@@ -120,6 +120,7 @@ tools/
   export_md.py                  # export tracked source files as one Markdown bundle
   export_github_md.py           # export GitHub metadata (PRs, issues, commits)
   diagnose_astron_layout.py     # layout/convention diagnosis of correlator dumps
+  make_grating_lobe_events.py   # events file with interferers near a grating lobe (+ MVDR prediction)
 legacy/                         # early exploratory scripts, kept for reference
 ```
 
@@ -156,6 +157,11 @@ Full tier (Kotekan):
 python test_charts/charts_sim.py generate --duration-s 5 --antennas 64 --num-freq 336 \
     --profile day --start-time 2026-03-20T15:00:00 --scratch-dir $SCRATCH/data/sim_test/<name>
 
+# Scenario with interferers at increasing offsets from a grating lobe of the look
+# direction (one channel each); pass the file to the generator with --events-json
+python tools/make_grating_lobe_events.py --look L M --spacing DX DY --lobe P Q \
+    --channels <ch ...> --offsets <offset ...> --amp 4 --out <events.json>
+
 # Build Kotekan and correlate a window (GPU, from trig-login01)
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir> jobs/correlate_kotekan.sh
@@ -163,6 +169,8 @@ sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir> jobs/
 # MVDR and saturation analysis of the correlated window (CPU; run list in a text file)
 sbatch --export=ALL,WINDOW_DIR=<window_dir>,CORR_DIR=<dump_dir>,OUT_DIR=<out_dir>,LOOK="L M",RUNS_FILE=<runs.txt> \
     jobs/analyze_window.sh
+# Interferers near a grating lobe: look-source power from the clean channels
+#   (add EXTRA_05="--p-look-ref clean" to the --export list)
 ```
 
 Dataset paths are always passed as command-line arguments; no path is

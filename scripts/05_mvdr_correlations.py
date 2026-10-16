@@ -19,6 +19,14 @@ then split as P = noise + signal + leak + residual (beamforming.power_budget):
   signal    P - noise - leak, the noise-free output attributed to the look source
   retained  signal / p_look: 1 for an ideal beamformer; < 1 for MVDR self-nulling
             (steering mismatch, finite K); > 1 when unmodelled power leaks in.
+  SINR      p_look / (noise + leak), output SINR of the modelled sources (both
+            beamformers have unit gain towards the look direction). The header of
+            each channel gives the interference-free DFT value p_look / (noise / N).
+With --p-look-ref clean, p_look is not fitted in the analysis channel but taken
+as the median fitted power over the nearest clean channels. Needed when an
+interferer is close to a grating lobe of the look direction: the steering
+vectors are then nearly collinear and the joint fit cannot split the power
+between the look source and the interferer.
 P_MVDR / P_DFT alone is ambiguous: it drops both when MVDR loses signal and when
 the DFT beam collects interference through its sidelobes. For moving sources
 (LEO) the fixed event position is only approximate, and the fit and leak are
@@ -121,6 +129,14 @@ def main() -> None:
     ap.add_argument("--grid", type=int, default=161)
     ap.add_argument("--no-refine", action="store_true",
                     help="keep the coarse grid peak as look direction (no local refinement)")
+    ap.add_argument("--p-look-ref", choices=["fit", "clean"], default="fit",
+                    help="look-source power: fitted in each channel (default) or the "
+                         "median fit over the nearest clean channels")
+    ap.add_argument("--clean-channels", type=int, nargs="+", default=None,
+                    help="clean channels for --p-look-ref clean (default: channels "
+                         "without interferers in the events file)")
+    ap.add_argument("--clean-neighbours", type=int, default=8,
+                    help="number of nearest clean channels for --p-look-ref clean")
     ap.add_argument("--out", type=Path, default=Path("mvdr_correlations"))
     args = ap.parse_args()
 
@@ -172,14 +188,31 @@ def main() -> None:
         look = tuple(args.look)
         print(f"look direction (given): l = {look[0]:+.4f}, m = {look[1]:+.4f}")
 
+    # Look-source power from the nearest clean channels (--p-look-ref clean)
+    p_look_clean = {}
+    if args.p_look_ref == "clean":
+        if args.clean_channels is not None:
+            clean_ch = sorted(set(args.clean_channels))
+        elif events:
+            clean_ch = [c for c in range(num_freq) if c not in rfi_by_ch]
+        else:
+            raise SystemExit("--p-look-ref clean needs --clean-channels or an events file")
+        for ch in args.channels:
+            near = sorted(clean_ch, key=lambda c: (abs(c - ch), c))[:args.clean_neighbours]
+            fits = [fit_source_powers(R[c], steering_vectors(*look, freq_hz[c], x, y))[0][0]
+                    for c in near]
+            p_look_clean[ch] = float(np.median(fits))
+        print(f"p_look from the {args.clean_neighbours} nearest clean channels "
+              f"(of {len(clean_ch)})")
+
     # Stage 2: MVDR per channel, with the power budget of each beamformer
     args.out.mkdir(parents=True, exist_ok=True)
     print("\nPowers in units of R per sample; signal = P - noise - leak; "
           "retained = signal / p_look")
     print(f"\n{'ch':>4} {'MHz':>7} {'beam':<5} {'P':>8} {'noise':>8} {'leak':>8} "
-          f"{'signal':>8} {'retained':>8} {'WNG dB':>7}  nulls [dB]")
+          f"{'signal':>8} {'retained':>8} {'WNG dB':>7} {'SINR dB':>7}  nulls [dB]")
     summary = {k: [] for k in ("ch", "freq_mhz", "p_look", "p_int", "int_lm",
-                               "noise_mean", "dft", "mvdr")}
+                               "noise_mean", "sinr_ref_db", "dft", "mvdr")}
     for ch in args.channels:
         f = freq_hz[ch]
         d = steering_vectors(*look, f, x, y)
@@ -196,28 +229,35 @@ def main() -> None:
         A_int = (steering_vectors([i[0] for i in ints], [i[1] for i in ints], f, x, y)
                  if ints else np.zeros((0, num_ant), dtype=complex))
         A = np.vstack([d, A_int])
-        p, noise = fit_source_powers(R[ch], A)
+        fixed = {0: p_look_clean[ch]} if ch in p_look_clean else None
+        p, noise = fit_source_powers(R[ch], A, fixed=fixed)
+        sinr_ref = 10 * np.log10(max(p[0], 1e-30) * num_ant / noise.mean())
         p_int_str = ", ".join(f"{pi:.3g} at ({li:+.3f}, {mi:+.3f}) {kind}"
                               for pi, (li, mi, kind) in zip(p[1:], ints)) or "none"
-        print(f"{ch:4d} {f / 1e6:7.1f} fit: p_look = {p[0]:.4f}, "
+        print(f"{ch:4d} {f / 1e6:7.1f} fit: p_look = {p[0]:.4f}"
+              f"{' (clean channels)' if fixed else ''}, "
               f"noise = {noise.mean():.3f} (per antenna {noise.min():.2f}-{noise.max():.2f}); "
-              f"interferers: {p_int_str}")
+              f"interferers: {p_int_str}; interference-free DFT SINR {sinr_ref:.2f} dB")
         beams = {}
         for name, w in (("DFT", w_dft), ("MVDR", w_mv)):
             b = power_budget(R[ch], w, A, p, noise)
             leak = float(b["source"][1:].sum())
             signal = b["total"] - b["noise"] - leak
             nulls = 10 * np.log10(np.abs(A_int.conj() @ w) ** 2 + 1e-30)
+            sinr = 10 * np.log10(max(p[0], 1e-30) / (b["noise"] + leak))
             beams[name] = {"P": b["total"], "noise": b["noise"], "leak": leak,
                            "signal": signal, "retained": signal / p[0],
-                           "wng_db": 10 * np.log10(b["wng"]), "nulls_db": nulls}
+                           "wng_db": 10 * np.log10(b["wng"]), "sinr_db": sinr,
+                           "nulls_db": nulls}
             null_str = " ".join(f"{v:6.1f}" for v in nulls) or "-"
             print(f"{'':4} {'':7} {name:<5} {b['total']:8.4f} {b['noise']:8.4f} {leak:8.4f} "
-                  f"{signal:8.4f} {signal / p[0]:8.3f} {beams[name]['wng_db']:7.2f}  {null_str}")
+                  f"{signal:8.4f} {signal / p[0]:8.3f} {beams[name]['wng_db']:7.2f} "
+                  f"{sinr:7.2f}  {null_str}")
         summary["ch"].append(ch); summary["freq_mhz"].append(f / 1e6)
         summary["p_look"].append(p[0]); summary["p_int"].append(p[1:])
         summary["int_lm"].append([(li, mi) for li, mi, _ in ints])
         summary["noise_mean"].append(noise.mean())
+        summary["sinr_ref_db"].append(sinr_ref)
         summary["dft"].append(beams["DFT"]); summary["mvdr"].append(beams["MVDR"])
 
         # Figure: DFT and Capon images with look and interferer directions
@@ -239,12 +279,13 @@ def main() -> None:
         plt.close(fig)
 
     flat = {"ch": np.array(summary["ch"]), "freq_mhz": np.array(summary["freq_mhz"]),
-            "p_look": np.array(summary["p_look"]), "noise_mean": np.array(summary["noise_mean"])}
+            "p_look": np.array(summary["p_look"]), "noise_mean": np.array(summary["noise_mean"]),
+            "sinr_ref_db": np.array(summary["sinr_ref_db"])}
     for beam in ("dft", "mvdr"):
-        for key in ("P", "noise", "leak", "signal", "retained", "wng_db"):
+        for key in ("P", "noise", "leak", "signal", "retained", "wng_db", "sinr_db"):
             flat[f"{beam}_{key}"] = np.array([b[key] for b in summary[beam]])
     np.savez(args.out / "mvdr_summary.npz", **flat, look=np.array(look), frames=np.array(idx),
-             loading=args.loading, loading_ref=args.loading_ref,
+             loading=args.loading, loading_ref=args.loading_ref, p_look_ref=args.p_look_ref,
              p_int=np.array(summary["p_int"], dtype=object),
              int_lm=np.array(summary["int_lm"], dtype=object),
              nulls_dft=np.array([b["nulls_db"] for b in summary["dft"]], dtype=object),
