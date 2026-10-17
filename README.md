@@ -96,9 +96,9 @@ On other systems, replace `debugjob` / `sbatch` with the local scheduler.
 ```
 pyproject.toml
 charts_mvdr/                    # importable package (pip install -e .)
-  data_io.py                    # baseband frames, window metadata, Kotekan correlation dumps
+  data_io.py                    # baseband frames, window metadata, events, frame selection, correlation dumps
   np_correlator.py              # NumPy (CPU) reference correlator
-  beamforming.py                # steering vectors, DFT/MVDR weights, (l, m) grid
+  beamforming.py                # steering vectors, DFT/MVDR weights, beam response, grating lobes, (l, m) grid
   checks.py                     # pre-flight checks of MVDR assumptions
   quantization.py               # 4-bit saturation model (Bussgang gain, input sigma)
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
@@ -110,6 +110,7 @@ scripts/
   04_compare_correlators.py     # Kotekan GPU correlator vs np_correlator
   05_mvdr_correlations.py       # DFT localization (refined) + MVDR on correlation dumps, power budget
   06_saturation_analysis.py     # 4-bit saturation per channel vs Bussgang prediction
+  07_beam_response.py           # DFT vs MVDR beam response |w^H a(l, m)|^2 maps from correlation dumps
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -128,9 +129,11 @@ legacy/                         # early exploratory scripts, kept for reference
 
 Planned scripts:
 
-- `07_mvdr_real.py`: MVDR on real observations with a configurable window.
-- `08_fitburst_inject.py`: synthetic FRB injection into real data.
-- `09_paper_figures.py`: figures for memos and reports.
+- `08_beamform_waterfall.py`: voltage-domain beamforming (DFT vs. KL/MVDR) and
+  per-channel S/N gain.
+- `09_mvdr_real.py`: MVDR on real observations with a configurable window.
+- `10_fitburst_inject.py`: synthetic FRB injection into real data.
+- `11_paper_figures.py`: figures for memos and reports.
 
 Longer term: port the beamformer to the real-time correlator pipeline.
 

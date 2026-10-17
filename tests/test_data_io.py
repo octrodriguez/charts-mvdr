@@ -79,3 +79,67 @@ def test_astron_negation_overflow_only_affects_minus8(tmp_path):
     write_astron(p, np.conj(S))           # writer conjugates back to S
     np.testing.assert_array_equal(read_astron_correlation(p, 2, 8),
                                   correlate(V.astype(np.complex128)))
+
+
+# --- window helpers: metadata, events, frame selection, mean correlation ----
+
+import json  # noqa: E402
+
+import h5py  # noqa: E402
+
+from charts_mvdr.data_io import (interferers_by_channel, list_correlation_dumps,  # noqa: E402
+                                 load_events_file, load_window_dir_meta, mean_correlation,
+                                 select_frames)
+
+
+def _write_meta(path, n_frames=5):
+    with h5py.File(path, "w") as f:
+        f["antenna_pos_x_m"] = np.arange(8) * 0.6
+        f["antenna_pos_y_m"] = np.zeros(8)
+        f["frequencies_mhz"] = 300.0 + 0.3 * np.arange(3)
+        f["frames/timestamp_s"] = 0.5 * np.arange(n_frames)
+        f["frames/output_file_index"] = np.arange(n_frames)
+
+
+def test_window_meta_and_selection(tmp_path):
+    _write_meta(tmp_path / "win_meta.h5")
+    meta = load_window_dir_meta(tmp_path)
+    assert meta["frequencies_mhz"].size == 3 and meta["frame_time_s"].size == 5
+    idx = range(5)                                   # times 0, 0.5, 1, 1.5, 2
+    assert select_frames(idx, meta) == [0, 1, 2, 3, 4]
+    assert select_frames(idx, meta, t_range=(0.5, 1.5)) == [1, 2, 3]
+    assert select_frames(idx, meta, exclude=(0.5, 1.0)) == [0, 3, 4]
+    assert select_frames(idx, meta, t_range=(0.0, 1.5), exclude=(1.0, 1.0)) == [0, 1, 3]
+    with pytest.raises(ValueError):
+        select_frames(idx, {}, t_range=(0, 1))
+    with pytest.raises(FileNotFoundError):
+        load_window_dir_meta(tmp_path / "missing")
+
+
+def test_events_and_interferers(tmp_path):
+    assert load_events_file(tmp_path) == []
+    ev = [{"event_type": "rfi_narrow", "l0": 0.1, "m0": -0.2, "channels": [4, 5]},
+          {"event_type": "frb", "l0": 0.0, "m0": 0.0, "channels": [4]},
+          {"event_type": "rfi_leo", "l0": 0.3, "m0": 0.3, "channels": [5]}]
+    (tmp_path / "win_events.json").write_text(json.dumps(ev))
+    rfi = interferers_by_channel(load_events_file(tmp_path))
+    assert sorted(rfi) == [4, 5]
+    assert rfi[4] == [(0.1, -0.2, "rfi_narrow")] and len(rfi[5]) == 2
+
+
+def test_mean_correlation_channels(tmp_path):
+    rng = np.random.default_rng(1)
+    Rs = []
+    for k in range(3):
+        V = rng.integers(-7, 8, (64, 3, 8)) + 1j * rng.integers(-7, 8, (64, 3, 8))
+        R = correlate(V.astype(np.complex128))
+        write_astron(tmp_path / f"corr_{k:07d}.bin", R)
+        Rs.append(R)
+    dumps = list_correlation_dumps(tmp_path)
+    assert sorted(dumps) == [0, 1, 2]
+    full = mean_correlation([dumps[k] for k in (0, 2)], 3, 8, samples=64)
+    np.testing.assert_allclose(full, (Rs[0] + Rs[2]) / (2 * 64))
+    sub = mean_correlation([dumps[k] for k in (0, 2)], 3, 8, samples=64, channels=[2, 0])
+    np.testing.assert_allclose(sub, full[[2, 0]])
+    with pytest.raises(ValueError):
+        mean_correlation([], 3, 8)

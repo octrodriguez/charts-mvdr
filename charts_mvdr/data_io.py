@@ -102,3 +102,100 @@ def read_astron_correlation(path, num_freq: int, num_ant: int,
     fill = ~stored
     R[:, fill] = np.conj(R.transpose(0, 2, 1))[:, fill]
     return R
+
+
+CORR_NAME_RE = re.compile(r"^(?P<prefix>.+)_(?P<index>\d{7})\.bin$")
+
+
+def load_window_dir_meta(window_dir) -> dict:
+    """Metadata of a simulated window from the <window>_meta.h5 in window_dir.
+
+    Returns antenna positions, frequencies and, when available, the frame
+    timestamps ("frame_time_s", time since window start [s]) with the output
+    file index of each frame ("frame_out_idx").
+    """
+    window_dir = Path(window_dir)
+    files = sorted(window_dir.glob("*_meta.h5"))
+    if not files:
+        raise FileNotFoundError(f"no *_meta.h5 in {window_dir}")
+    with h5py.File(files[0], "r") as f:
+        meta = {k: f[k][:] for k in ("antenna_pos_x_m", "antenna_pos_y_m", "frequencies_mhz")}
+        if "frames/timestamp_s" in f and "frames/output_file_index" in f:
+            meta["frame_time_s"] = f["frames/timestamp_s"][:].astype(float)
+            meta["frame_out_idx"] = f["frames/output_file_index"][:].astype(int)
+    return meta
+
+
+def load_events_file(window_dir) -> list:
+    """Event list from the first *events*.json in window_dir ([] if none)."""
+    import json
+
+    files = sorted(Path(window_dir).glob("*events*.json"))
+    if not files:
+        return []
+    events = json.loads(files[0].read_text())
+    return events if isinstance(events, list) else []
+
+
+def interferers_by_channel(events) -> dict:
+    """{channel: [(l, m, event_type), ...]} for the RFI events of an events list."""
+    out = {}
+    for ev in events:
+        if str(ev.get("event_type", "")).startswith("rfi") and ev.get("channels"):
+            for ch in ev["channels"]:
+                out.setdefault(int(ch), []).append(
+                    (float(ev["l0"]), float(ev["m0"]), ev["event_type"]))
+    return out
+
+
+def list_correlation_dumps(corr_dir) -> dict:
+    """{dump index: path} for the corr_%07d.bin files in corr_dir."""
+    return {int(m["index"]): p for p in sorted(Path(corr_dir).glob("*.bin"))
+            if (m := CORR_NAME_RE.match(p.name))}
+
+
+def select_frames(indices, meta: dict, t_range=None, exclude=None) -> list:
+    """Dump indices whose frame time is inside t_range and outside exclude.
+
+    t_range and exclude are (t0, t1) in seconds since the window start (both
+    ends inclusive) or None. exclude gives the complement of an on-pulse
+    window, e.g. the signal-free (off-pulse) frames for a KL covariance.
+    Without frame timestamps in meta the indices are returned unchanged when
+    no selection is asked for; asking for one raises ValueError.
+    """
+    indices = sorted(int(k) for k in indices)
+    if t_range is None and exclude is None:
+        return indices
+    if "frame_time_s" not in meta:
+        raise ValueError("time selection needs frame timestamps in the window metadata")
+    t = dict(zip(np.asarray(meta["frame_out_idx"]).astype(int), meta["frame_time_s"]))
+    out = []
+    for k in indices:
+        tk = t.get(k)
+        if tk is None:
+            continue
+        if t_range is not None and not (t_range[0] <= tk <= t_range[1]):
+            continue
+        if exclude is not None and exclude[0] <= tk <= exclude[1]:
+            continue
+        out.append(k)
+    return out
+
+
+def mean_correlation(paths, num_freq: int, num_ant: int, samples: int = SAMPLES_PER_FRAME,
+                     channels=None) -> np.ndarray:
+    """Average of cudaCorrelatorAstron dumps, normalized to power per sample.
+
+    Returns R[f, i, j] (all channels, or only the given channel indices, in
+    that order) with the np_correlator convention, divided by the number of
+    dumps times the samples per dump.
+    """
+    paths = list(paths)
+    if not paths:
+        raise ValueError("no correlation dumps given")
+    sel = slice(None) if channels is None else np.asarray(channels, dtype=int)
+    R = None
+    for p in paths:
+        Rk = read_astron_correlation(p, num_freq, num_ant)[sel]
+        R = Rk if R is None else R + Rk
+    return R / (len(paths) * samples)

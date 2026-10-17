@@ -121,3 +121,47 @@ def test_power_budget_closes_with_exact_model(beam):
     assert b["wng"] >= 1.0 - 1e-12
     if beam == "mvdr":
         assert b["source"][1] < 1e-6 * b["source"][0]     # interferer nulled
+
+
+# --- beam_response, regular_grid_spacing ------------------------------------
+
+from charts_mvdr.beamforming import (beam_response, grating_lobes,  # noqa: E402
+                                     regular_grid_spacing)
+
+
+def _grid(nx=8, ny=8, d=0.6):
+    k = np.arange(nx * ny)
+    return (k % nx) * d, (k // nx) * d
+
+
+def test_regular_grid_spacing():
+    x, y = _grid(8, 4, 0.6)
+    assert regular_grid_spacing(x, y) == pytest.approx((0.6, 0.6))
+    x2 = x.copy(); x2[5] += 0.07
+    assert regular_grid_spacing(x2, y) is None
+    assert regular_grid_spacing(np.zeros(4), np.arange(4.0)) is None
+
+
+def test_beam_response_dft_look_and_grating_lobe():
+    x, y = _grid()
+    f = 399e6
+    d = steering_vectors(0.4677, 0.4801, f, x, y)
+    w = dft_weights(d)[0]
+    assert beam_response(w, 0.4677, 0.4801, f, x, y)[0] == pytest.approx(1.0)
+    lobes = grating_lobes(0.4677, 0.4801, f, 0.6, 0.6)
+    assert lobes
+    for _, _, l, m in lobes:
+        assert beam_response(w, l, m, f, x, y)[0] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_beam_response_mvdr_null_and_unit_gain():
+    x, y = _grid()
+    f = 350e6
+    d = steering_vectors(0.2, 0.1, f, x, y)
+    a = steering_vectors(-0.3, 0.4, f, x, y)
+    R = np.eye(64) + 0.1 * np.outer(d[0], d[0].conj()) + 100.0 * np.outer(a[0], a[0].conj())
+    w = mvdr_weights(R, d)[0]
+    assert beam_response(w, 0.2, 0.1, f, x, y)[0] == pytest.approx(1.0)
+    assert beam_response(w, -0.3, 0.4, f, x, y)[0] < 1e-4
+    # vectorized over directions
+    assert beam_response(w, [0.2, -0.3], [0.1, 0.4], f, x, y).shape == (2,)

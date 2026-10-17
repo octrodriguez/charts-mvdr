@@ -48,6 +48,39 @@ def grating_lobes(l0: float, m0: float, freq_hz: float, dx: float, dy: float,
     return lobes
 
 
+def regular_grid_spacing(pos_x, pos_y, rtol: float = 1e-3):
+    """Spacings (dx, dy) if the antennas lie on a rectangular grid, else None.
+
+    The spacing along each axis is the smallest nonzero difference between
+    distinct coordinates; the layout counts as a grid when every coordinate is
+    an integer multiple of it (within rtol of the spacing) from the minimum.
+    Used to decide whether grating lobes (grating_lobes) are well defined.
+    """
+    out = []
+    for c in (np.asarray(pos_x, dtype=float), np.asarray(pos_y, dtype=float)):
+        u = np.unique(np.round(c, 9))
+        if u.size < 2:
+            return None
+        step = float(np.min(np.diff(u)))
+        k = (c - c.min()) / step
+        if np.max(np.abs(k - np.rint(k))) > rtol:
+            return None
+        out.append(step)
+    return tuple(out)
+
+
+def beam_response(w: np.ndarray, l, m, freq_hz: float, pos_x, pos_y) -> np.ndarray:
+    """Power response |w^H a(l, m)|^2 of one beamformer towards many directions.
+
+    For weights with unit gain towards the look direction (w^H d = 1, as DFT and
+    MVDR weights from dft_weights / mvdr_weights) the response is 1 there, so
+    10 log10 of it is the beam pattern in dB relative to the look direction.
+    Returns an array with one value per direction.
+    """
+    A = steering_vectors(l, m, freq_hz, pos_x, pos_y)
+    return np.abs(A.conj() @ np.asarray(w)) ** 2
+
+
 def dft_weights(A: np.ndarray) -> np.ndarray:
     """DFT (conventional) weights w = a / N for each steering vector in A (n_dir, n_ant)."""
     A = np.atleast_2d(A)
