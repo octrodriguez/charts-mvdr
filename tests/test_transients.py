@@ -77,3 +77,19 @@ def test_tool_append_and_errors(tmp_path):
     assert res.returncode != 0 and "missing" in res.stderr
     res, _ = run_tool(tmp_path, "--rfi", "l=0 m=0 amp=1 t0=0 dur=1 ch=400")
     assert res.returncode != 0 and "outside" in res.stderr
+
+
+def test_burst_from_events():
+    from charts_mvdr.transients import burst_from_events
+    ev = [{"event_id": "r", "event_type": "rfi_narrow"},
+          {"event_id": "b1", "event_type": "frb", "dm": 5.0, "pulse_width_ms": 2.0,
+           "t_start_s": 1.0, "l0": -0.1, "m0": 0.25},
+          {"event_id": "b2", "event_type": "frb", "dm": 9.0, "pulse_width_ms": 1.0,
+           "t_start_s": 2.0, "l0": 0.0, "m0": 0.0}]
+    b = burst_from_events(ev)
+    assert b == {"id": "b1", "dm": 5.0, "width_s": 0.002, "t_top_s": 1.0, "l": -0.1, "m": 0.25}
+    assert burst_from_events(ev, "b2")["dm"] == 9.0
+    with pytest.raises(ValueError):
+        burst_from_events(ev, "x")
+    with pytest.raises(ValueError):
+        burst_from_events([])

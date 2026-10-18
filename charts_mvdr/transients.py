@@ -41,3 +41,20 @@ def on_pulse_mask(times_s, freq_mhz, dm: float, t_ref_s: float, width_s: float,
     ta = arrival_times_s(freq_mhz, dm, t_ref_s, f_ref_mhz)[None, :]
     half = n_sigma * width_s
     return (t <= ta + half) & (t + frame_s >= ta - half)
+
+
+def burst_from_events(events, event_id=None) -> dict:
+    """Parameters of a dispersed burst from an events list (simulator format).
+
+    Returns {"id", "dm", "width_s", "t_top_s", "l", "m"} of the first event with
+    event_type "frb" (or the one with event_id). width_s is the envelope sigma
+    (pulse_width_ms / 1e3); t_top_s is the arrival time in the top channel.
+    Raises ValueError if there is none.
+    """
+    for ev in events:
+        if ev.get("event_type") == "frb" and event_id in (None, ev.get("event_id")):
+            return {"id": ev.get("event_id", ""), "dm": float(ev["dm"]),
+                    "width_s": float(ev["pulse_width_ms"]) * 1e-3,
+                    "t_top_s": float(ev["t_start_s"]), "l": float(ev["l0"]),
+                    "m": float(ev["m0"])}
+    raise ValueError("no frb event" + (f" with id {event_id!r}" if event_id else ""))

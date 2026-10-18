@@ -113,6 +113,7 @@ scripts/
   06_saturation_analysis.py     # 4-bit saturation per channel vs Bussgang prediction
   07_beam_response.py           # DFT vs MVDR beam response |w^H a(l, m)|^2 maps from correlation dumps
   08_transient_snr.py           # dispersed burst: S/N through DFT and MVDR (on, all, off-pulse covariances)
+  09_beamform_waterfall.py      # voltage-domain DFT vs KL beamforming: waterfalls, per-channel and dedispersed S/N
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -132,8 +133,6 @@ legacy/                         # early exploratory scripts, kept for reference
 
 Planned scripts:
 
-- `09_beamform_waterfall.py`: voltage-domain beamforming (DFT vs. KL/MVDR) and
-  per-channel S/N gain.
 - `10_mvdr_real.py`: MVDR on real observations with a configurable window.
 - `11_fitburst_inject.py`: synthetic FRB injection into real data.
 - `12_paper_figures.py`: figures for memos and reports.
