@@ -98,6 +98,8 @@ def main() -> None:
     ap.add_argument("--samples", type=int, default=1536, help="samples per dump")
     ap.add_argument("--grid", type=int, default=501, help="map points per axis")
     ap.add_argument("--vmin", type=float, default=-60.0, help="lower colour limit [dB]")
+    ap.add_argument("--cut-zoom", type=float, default=None, metavar="W",
+                    help="add an inset to the cut, +-W around the first interferer")
     ap.add_argument("--out", type=Path, default=Path("beam_response"))
     args = ap.parse_args()
 
@@ -137,6 +139,9 @@ def main() -> None:
     gl, gm, mask = lm_grid(args.grid)
     args.out.mkdir(parents=True, exist_ok=True)
     beams = ["DFT"] + [f"MVDR d={ld:g}" for ld in args.loading]
+    ref_tex = {"noise": r"\hat\sigma_n^2", "trace": r"\,\mathrm{tr}(F)/N", "absolute": ""}
+    titles = ["DFT"] + [rf"MVDR, $\delta = {ld:g}{ref_tex[args.loading_ref] if ld else ''}$"
+                        for ld in args.loading]
     save = {"look": np.array(look), "channels": np.array(args.channels),
             "freq_mhz": freq_hz[args.channels] / 1e6, "loading": np.array(args.loading),
             "loading_ref": args.loading_ref, "frames_r": np.array(idx_r),
@@ -178,7 +183,7 @@ def main() -> None:
         nb = len(beams)
         vmax = max(0.0, float(np.ceil(max(float(mp.max()) for mp in maps))))
         fig, axes = plt.subplots(1, nb + 1, figsize=(4.4 * (nb + 1), 4.3), layout="constrained")
-        for ax, name, mp in zip(axes, beams, maps):
+        for ax, name, mp in zip(axes, titles, maps):
             full = np.full(mask.shape, np.nan)
             full[mask] = mp
             im = ax.imshow(full, origin="lower", extent=[-1, 1, -1, 1], cmap="viridis",
@@ -198,7 +203,7 @@ def main() -> None:
         target = ((ints[0][0], ints[0][1]) if ints else
                   (lobes[0][2], lobes[0][3]) if lobes else (look[0] + 1.0, look[1]))
         s, lc, mc, u = cut_axis(look, target)
-        for name, w in zip(beams, W):
+        for name, w in zip(titles, W):
             ax.plot(s, db(beam_response(w, lc, mc, f, x, y)), lw=1.0, label=name)
         for a, b, _ in ints:
             ax.axvline((a - look[0]) * u[0] + (b - look[1]) * u[1], color="r", ls=":", lw=1)
@@ -210,6 +215,21 @@ def main() -> None:
         ax.set_ylim(args.vmin - 10, vmax + 3); ax.set_xlabel("distance from look along cut")
         ax.set_ylabel("dB"); ax.set_title("cut: look to interferer / lobe", fontsize=10)
         ax.legend(fontsize=7, loc="lower left")
+        if args.cut_zoom and ints:
+            s_i = (ints[0][0] - look[0]) * u[0] + (ints[0][1] - look[1]) * u[1]
+            sz = np.linspace(s_i - args.cut_zoom, s_i + args.cut_zoom, 801)
+            lz, mz = look[0] + sz * u[0], look[1] + sz * u[1]
+            vis = lz ** 2 + mz ** 2 < 1.0
+            ins = ax.inset_axes([0.6, 0.08, 0.38, 0.34])
+            for w in W:
+                ins.plot(sz[vis], db(beam_response(w, lz[vis], mz[vis], f, x, y)), lw=1.0)
+            ins.axvline(s_i, color="r", ls=":", lw=1)
+            for _, _, a, b in lobes:
+                s_l = (a - look[0]) * u[0] + (b - look[1]) * u[1]
+                if abs(s_l - s_i) <= args.cut_zoom:
+                    ins.axvline(s_l, color="0.4", ls="--", lw=1)
+            ins.set_ylim(args.vmin - 10, vmax + 3)
+            ins.tick_params(labelsize=6)
         fig.suptitle(f"ch {ch} ({f / 1e6:.1f} MHz): beam response |w$^H$a(l, m)|$^2$", fontsize=11)
         fig.savefig(args.out / f"beam_response_ch{ch:03d}.png", dpi=140, bbox_inches="tight")
         plt.close(fig)

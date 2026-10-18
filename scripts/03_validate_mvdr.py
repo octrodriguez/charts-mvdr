@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Validate DFT and MVDR beamforming on CPU-tier simulations.
 
-Four sweeps, all with ground truth from ``charts_mvdr.sim_cpu``:
+Six sweeps, all with ground truth from ``charts_mvdr.sim_cpu``:
 
   position : SINR loss vs interferer direction (2D map + 1D cuts through the
              main beam at several frequencies, grating lobes marked).
@@ -9,6 +9,8 @@ Four sweeps, all with ground truth from ``charts_mvdr.sim_cpu``:
              with 4-bit quantization (symmetric and asymmetric clipping).
   k        : SINR loss vs number of samples K, against Reed-Mallett-Brennan.
   loading  : SINR loss vs diagonal loading, with steering-vector phase errors.
+  offpulse : MVDR weights from the signal-in R vs the signal-free (off-pulse)
+             F under pointing and per-antenna phase errors, several source SNRs.
   leo      : signal retained by MVDR in a channel with a strong LEO-like
              interferer, 2 x 2 design: static vs moving interferer, without vs
              with 4-bit quantization (Kotekan-tier frame structure: several
@@ -441,9 +443,134 @@ def sweep_leo(args, out: Path):
 
 
 # ---------------------------------------------------------------------------
+# Sweep 6: signal-in vs signal-free (off-pulse) covariance under steering errors
+# ---------------------------------------------------------------------------
+
+OP_BEAMS = ("dft", "on_d0", "off_d0", "on_d10", "off_d10")
+
+
+def sweep_offpulse(args, out: Path):
+    """MVDR weights from the signal-in covariance R vs the signal-free F.
+
+    The KL filter of Andrew et al. (b proportional to F^-1 d) takes F from
+    off-pulse data. With an exact steering vector F^-1 d and R^-1 d have the same
+    direction (matrix inversion lemma), so both give the same SINR up to finite-K
+    effects. With a steering error the source in R is seen as an interferer
+    slightly off the look direction and MVDR partially nulls it (self-nulling);
+    the loss grows with the source SINR. F does not contain the source, so it
+    cannot self-null.
+
+    For each array SNR (SINR_0 = N p_s / sigma_n^2) and each steering error,
+    independent training sets of K samples give R (source on) and F (source
+    off); SINR is evaluated with the true steering vector and the true R_in.
+    Two error types:
+      pointing  true source at (l0 + dl, m0), weights steered to (l0, m0)
+      phase     per-antenna phase errors (rms, applied to all sources, as
+                uncalibrated complex gains), weights with the nominal vector
+    Loadings 0 and 10 sigma_n^2 (absolute, true noise power).
+    """
+    freq = args.freq
+    pos = sc.grid_positions(N_SIDE, N_SIDE, SPACING)
+    N = pos.shape[0]
+    sig_n2 = 2.0 * NOISE_SIGMA ** 2
+    p_rfi = sig_n2 * 10 ** (args.inr_db / 10)
+    d = sc.steer(freq, *SUN_LM, pos)
+    rng = np.random.default_rng(args.seed)
+    errors = {"pointing": np.asarray(args.op_pointing, float),
+              "phase": np.asarray(args.op_phase_deg, float)}
+    snrs = np.asarray(args.op_snr_db, float)
+    res = {(s, kind, i, b): np.zeros(args.trials) for s in snrs for kind in errors
+           for i in range(errors[kind].size) for b in OP_BEAMS}
+    wng = {(s, kind, i, b): np.zeros(args.trials) for s in snrs for kind in errors
+           for i in range(errors[kind].size) for b in OP_BEAMS[1:]}
+    opt = {(s, kind, i): np.zeros(args.trials) for s in snrs for kind in errors
+           for i in range(errors[kind].size)}
+
+    for s in snrs:
+        p_s = sig_n2 * 10 ** (s / 10) / N
+        for kind, vals in errors.items():
+            for i, e in enumerate(vals):
+                for t in range(args.trials):
+                    if kind == "pointing":
+                        src_lm, gains = (SUN_LM[0] + e, SUN_LM[1]), None
+                    else:
+                        src_lm = SUN_LM
+                        gains = np.exp(1j * np.deg2rad(e) * rng.standard_normal(N))
+
+                    def scn(p_sun):
+                        return sc.Scenario(
+                            freqs_hz=[freq], positions=pos, noise_sigma=NOISE_SIGMA, gains=gains,
+                            sources=[sc.Source(*src_lm, power=p_sun, name="sun"),
+                                     sc.Source(*RFI_LM, power=p_rfi, name="rfi")])
+
+                    R_in = sc.analytic_covariance(scn(0.0))[0]
+                    g = np.ones(N) if gains is None else gains
+                    a_true = g * sc.steer(freq, *src_lm, pos)
+                    _, R = rhat(scn(p_s), args.op_k, rng.integers(2 ** 32))
+                    _, F = rhat(scn(0.0), args.op_k, rng.integers(2 ** 32))
+                    opt[(s, kind, i)][t] = sc.optimal_sinr(a_true, p_s, R_in)
+                    weights = {"dft": w_dft(d)}
+                    for name, C in (("on", R), ("off", F)):
+                        for dl in (0, 10):
+                            weights[f"{name}_d{dl}"] = w_mvdr(C, d, dl * sig_n2)
+                    for b, w in weights.items():
+                        res[(s, kind, i, b)][t] = sc.output_sinr(w, a_true, p_s, R_in)
+                        if b != "dft":
+                            wng[(s, kind, i, b)][t] = db(N * np.sum(np.abs(w) ** 2))
+            print(f"[offpulse] SNR {s:+.0f} dB done", flush=True)
+
+    ref = {s: sig_n2 * 10 ** (s / 10) for s in snrs}       # SINR_0 = N p_s / sigma_n^2
+    print(f"\n[offpulse] {freq / 1e6:.1f} MHz, K = {args.op_k}, INR {args.inr_db:.0f} dB per "
+          f"element, RFI at {RFI_LM}; SINR loss [dB] relative to SINR_0 = N p_s / sigma_n^2")
+    print(f"{'SNR':>5} {'error':>9} {'value':>7} {'opt':>6} " + " ".join(f"{b:>8}" for b in OP_BEAMS)
+          + "   WNG on_d0 / off_d0 [dB]")
+    for s in snrs:
+        for kind, vals in errors.items():
+            for i, e in enumerate(vals):
+                lo = [db(res[(s, kind, i, b)].mean() / ref[s] * sig_n2) for b in OP_BEAMS]
+                print(f"{s:5.0f} {kind:>9} {e:7.4g} {db(opt[(s, kind, i)].mean() / ref[s] * sig_n2):6.2f} "
+                      + " ".join(f"{v:8.2f}" for v in lo)
+                      + f"   {wng[(s, kind, i, 'on_d0')].mean():5.2f} / "
+                        f"{wng[(s, kind, i, 'off_d0')].mean():5.2f}")
+
+    np.savez(out / "sweep_offpulse.npz", freq=freq, K=args.op_k, inr_db=args.inr_db,
+             snr_db=snrs, pointing=errors["pointing"], phase_deg=errors["phase"],
+             **{f"snr{s:g}_{kind}{i}_{b}": v for (s, kind, i, b), v in res.items()},
+             **{f"snr{s:g}_{kind}{i}_{b}_wng_db": v for (s, kind, i, b), v in wng.items()},
+             **{f"snr{s:g}_{kind}{i}_opt": v for (s, kind, i), v in opt.items()})
+
+    fig, axes = plt.subplots(2, snrs.size, figsize=(4.2 * snrs.size, 7.5), squeeze=False,
+                             sharey="row")
+    style = {"dft": ("k", ":"), "on_d0": ("C3", "-"), "off_d0": ("C0", "-"),
+             "on_d10": ("C3", "--"), "off_d10": ("C0", "--")}
+    label = {"dft": "DFT", "on_d0": r"$R^{-1}d$, $\delta=0$", "off_d0": r"$F^{-1}d$, $\delta=0$",
+             "on_d10": r"$R^{-1}d$, $\delta=10\sigma_n^2$",
+             "off_d10": r"$F^{-1}d$, $\delta=10\sigma_n^2$"}
+    xlab = {"pointing": r"pointing error $\Delta l$", "phase": "phase error rms [deg]"}
+    for c, s in enumerate(snrs):
+        for r, (kind, vals) in enumerate(errors.items()):
+            ax = axes[r, c]
+            ax.plot(vals, [db(opt[(s, kind, i)].mean() / ref[s] * sig_n2) for i in range(vals.size)],
+                    color="0.6", lw=3, alpha=0.6, label="optimum (true $a$, $R_{in}$)")
+            for b in OP_BEAMS:
+                ax.plot(vals, [db(res[(s, kind, i, b)].mean() / ref[s] * sig_n2)
+                               for i in range(vals.size)], "o", ms=3, color=style[b][0],
+                        ls=style[b][1], label=label[b])
+            ax.set_xlabel(xlab[kind]); ax.grid(alpha=0.3)
+            if r == 0:
+                ax.set_title(f"array SNR {s:g} dB")
+            if c == 0:
+                ax.set_ylabel("SINR loss [dB]")
+    axes[0, 0].legend(fontsize=7)
+    fig.suptitle(f"Signal-in vs signal-free covariance: {freq / 1e6:.1f} MHz, K = {args.op_k}, "
+                 f"INR {args.inr_db:.0f} dB", fontsize=10)
+    fig.tight_layout(); fig.savefig(out / "sweep_offpulse.png", dpi=130); plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 
 SWEEPS = {"position": sweep_position, "inr": sweep_inr, "k": sweep_k, "loading": sweep_loading,
-          "leo": sweep_leo}
+          "leo": sweep_leo, "offpulse": sweep_offpulse}
 
 
 def main():
@@ -477,12 +604,22 @@ def main():
     p.add_argument("--leo-p-sun", type=float, default=0.43, help="desired-signal complex variance")
     p.add_argument("--leo-frames", type=int, default=11)
     p.add_argument("--leo-spacing", type=float, default=0.05, help="frame spacing [s]")
+    # offpulse
+    p.add_argument("--op-snr-db", type=float, nargs="+", default=[0.0, 10.0, 20.0],
+                   help="array SNR N p_s / sigma_n^2 of the desired source [dB]")
+    p.add_argument("--op-pointing", type=float, nargs="+",
+                   default=[0.0, 0.0025, 0.005, 0.01, 0.02], help="pointing errors in l")
+    p.add_argument("--op-phase-deg", type=float, nargs="+", default=[0.0, 2.0, 5.0, 10.0],
+                   help="per-antenna phase errors, rms [deg]")
+    p.add_argument("--op-k", type=int, default=8 * 1536,
+                   help="training samples for R and for F (each)")
     args = p.parse_args()
 
     if args.quick:
         args.grid, args.cut_points, args.trials = 41, 61, 3
         args.inr_step, args.k_eval = 10.0, 4 * 1536
         args.leo_frames = 3
+        args.op_k = 1536
 
     args.out.mkdir(parents=True, exist_ok=True)
     for name in (SWEEPS if args.sweep == "all" else [args.sweep]):

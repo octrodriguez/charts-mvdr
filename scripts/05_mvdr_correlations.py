@@ -36,6 +36,16 @@ suppresses it, so the white-noise term overestimates the MVDR noise and
 retained underestimates the signal (see 03_validate_mvdr.py --sweep leo, which
 compares it with the true retention).
 
+Weights covariance: by default MVDR uses the analysis covariance R (the frames
+selected with --t-range). With --cov-t-range and/or --cov-exclude the weights
+use F from other frames, e.g. the signal-free (off-pulse) frames of a transient,
+as in the KL filter of Andrew et al. (b proportional to F^-1 d). The power budget
+is always computed on R. With exact steering F^-1 d and R^-1 d give the same
+weights; with steering errors weights from R partially null the source
+(self-nulling, growing with its SINR; see 03_validate_mvdr.py --sweep offpulse),
+weights from a signal-free F do not. The noise floor for --loading-ref noise is
+taken from F.
+
 Inputs are Kotekan cudaCorrelatorAstron dumps (corr_%07d.bin, read with
 read_astron_correlation) and the window metadata (<window>_meta.h5) with antenna
 positions, frequencies and frame timestamps. Interferer directions are taken from
@@ -52,11 +62,8 @@ Example:
 from __future__ import annotations
 
 import argparse
-import json
-import re
 from pathlib import Path
 
-import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -65,35 +72,9 @@ import numpy as np
 from charts_mvdr.beamforming import (beam_power, dft_weights, fit_source_powers, lm_grid,
                                      mvdr_weights, power_budget, refine_peak,
                                      steering_vectors)
-from charts_mvdr.data_io import read_astron_correlation
-
-CORR_RE = re.compile(r"^(?P<prefix>.+)_(?P<index>\d{7})\.bin$")
-
-
-def load_meta(window_dir: Path) -> dict:
-    meta_path = next(window_dir.glob("*_meta.h5"))
-    with h5py.File(meta_path, "r") as f:
-        meta = {k: f[k][:] for k in ("antenna_pos_x_m", "antenna_pos_y_m", "frequencies_mhz")}
-        if "frames/timestamp_s" in f:
-            meta["frame_time_s"] = f["frames/timestamp_s"][:]
-            meta["frame_out_idx"] = f["frames/output_file_index"][:]
-    return meta
-
-
-def load_events(window_dir: Path) -> list[dict]:
-    files = sorted(window_dir.glob("*events*.json"))
-    if not files:
-        return []
-    events = json.loads(files[0].read_text())
-    return events if isinstance(events, list) else []
-
-
-def mean_covariance(corr_dir, indices, num_freq, num_ant, samples):
-    """Average of the selected dumps, normalized to power per sample."""
-    R = np.zeros((num_freq, num_ant, num_ant), dtype=np.complex128)
-    for p in indices:
-        R += read_astron_correlation(p, num_freq, num_ant)
-    return R / (len(indices) * samples)
+from charts_mvdr.data_io import (interferers_by_channel, list_correlation_dumps,
+                                 load_events_file, load_window_dir_meta, mean_correlation,
+                                 select_frames)
 
 
 def image(R, freq_hz, x, y, l, m, kind="dft"):
@@ -121,6 +102,11 @@ def main() -> None:
                     help="look direction; default: DFT peak over clean channels")
     ap.add_argument("--t-range", type=float, nargs=2, default=None, metavar=("T0", "T1"),
                     help="use only frames with timestamp in [T0, T1] s")
+    ap.add_argument("--cov-t-range", type=float, nargs=2, default=None, metavar=("T0", "T1"),
+                    help="frames for the MVDR weights covariance F (default: F = R)")
+    ap.add_argument("--cov-exclude", type=float, nargs=2, default=None, metavar=("T0", "T1"),
+                    help="exclude these frames from F, e.g. the on-pulse window (KL / "
+                         "off-pulse weights)")
     ap.add_argument("--loading", type=float, default=0.0,
                     help="diagonal loading, in units of --loading-ref (e.g. 10 with 'noise')")
     ap.add_argument("--loading-ref", choices=["trace", "noise", "absolute"], default="noise",
@@ -140,31 +126,37 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("mvdr_correlations"))
     args = ap.parse_args()
 
-    meta = load_meta(args.window_dir)
+    meta = load_window_dir_meta(args.window_dir)
     x, y = meta["antenna_pos_x_m"], meta["antenna_pos_y_m"]
     freq_hz = meta["frequencies_mhz"] * 1e6
     num_ant, num_freq = x.size, freq_hz.size
-    events = load_events(args.window_dir)
+    events = load_events_file(args.window_dir)
 
-    dumps = {int(m["index"]): p for p in sorted(args.corr_dir.glob("*.bin"))
-             if (m := CORR_RE.match(p.name))}
-    idx = sorted(dumps)
-    if args.t_range and "frame_time_s" in meta:
-        t = dict(zip(meta["frame_out_idx"].astype(int), meta["frame_time_s"]))
-        idx = [k for k in idx if args.t_range[0] <= t.get(k, -1) <= args.t_range[1]]
+    dumps = list_correlation_dumps(args.corr_dir)
+    if args.t_range and "frame_time_s" not in meta:
+        print("warning: no frame timestamps in the metadata, --t-range ignored")
+        args.t_range = None
+    idx = select_frames(dumps, meta, t_range=args.t_range)
     if not idx:
         raise SystemExit("no correlation dumps selected")
     print(f"{len(idx)} dumps, {num_ant} antennas, {num_freq} channels "
           f"({freq_hz[0] / 1e6:.1f}-{freq_hz[-1] / 1e6:.1f} MHz)")
-    R = mean_covariance(args.corr_dir, [dumps[k] for k in idx], num_freq, num_ant, args.samples)
+    R = mean_correlation([dumps[k] for k in idx], num_freq, num_ant, args.samples)
+
+    # Weights covariance: the analysis covariance R, or F from other frames
+    use_f = args.cov_t_range is not None or args.cov_exclude is not None
+    if use_f:
+        idx_f = select_frames(dumps, meta, t_range=args.cov_t_range, exclude=args.cov_exclude)
+        if not idx_f:
+            raise SystemExit("no correlation dumps selected for the weights covariance")
+        F = mean_correlation([dumps[k] for k in idx_f], num_freq, num_ant, args.samples)
+        print(f"MVDR weights from F: {len(idx_f)} dumps "
+              f"({len(set(idx_f) & set(idx))} shared with R)")
+    else:
+        idx_f, F = idx, R
 
     # Interferers from the events file: {channel: [(l, m, type)]}
-    rfi_by_ch: dict[int, list] = {}
-    for ev in events:
-        if str(ev.get("event_type", "")).startswith("rfi") and ev.get("channels"):
-            for ch in ev["channels"]:
-                rfi_by_ch.setdefault(int(ch), []).append(
-                    (float(ev["l0"]), float(ev["m0"]), ev["event_type"]))
+    rfi_by_ch = interferers_by_channel(events)
     if rfi_by_ch:
         print("interferers from events:",
               {ch: [(round(a, 3), round(b, 3), t) for a, b, t in v] for ch, v in sorted(rfi_by_ch.items())})
@@ -217,7 +209,7 @@ def main() -> None:
         f = freq_hz[ch]
         d = steering_vectors(*look, f, x, y)
         w_dft = dft_weights(d)[0]
-        w_mv = mvdr_weights(R[ch], d, loading=args.loading, loading_ref=args.loading_ref)[0]
+        w_mv = mvdr_weights(F[ch], d, loading=args.loading, loading_ref=args.loading_ref)[0]
         if events:   # simulation: ground truth; clean channels have no interferer
             ints = rfi_by_ch.get(ch, [])
         else:        # real data: strongest DFT peak outside the main beam of the look direction
@@ -285,6 +277,7 @@ def main() -> None:
         for key in ("P", "noise", "leak", "signal", "retained", "wng_db", "sinr_db"):
             flat[f"{beam}_{key}"] = np.array([b[key] for b in summary[beam]])
     np.savez(args.out / "mvdr_summary.npz", **flat, look=np.array(look), frames=np.array(idx),
+             frames_cov=np.array(idx_f),
              loading=args.loading, loading_ref=args.loading_ref, p_look_ref=args.p_look_ref,
              p_int=np.array(summary["p_int"], dtype=object),
              int_lm=np.array(summary["int_lm"], dtype=object),

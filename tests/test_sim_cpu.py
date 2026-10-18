@@ -139,3 +139,29 @@ def test_drifting_source_matches_static_source_at_same_position():
     xm = sc.simulate_voltages(moving, 128, rng=5, times_s=np.full(128, t0))
     xs = sc.simulate_voltages(static, 128, rng=5)
     np.testing.assert_allclose(xm, xs, atol=1e-5)
+
+
+# --- signal-in vs signal-free covariance (self-nulling) ---------------------
+
+def test_self_nulling_signal_in_vs_signal_free():
+    """With a pointing error, MVDR on R (source inside) nulls part of the source;
+    on the signal-free R_in it does not. With exact steering both coincide."""
+    f = 344.1e6
+    pos = sc.grid_positions(8, 8, 0.6)
+    look, rfi = (0.47, 0.48), (-0.83, -0.482)
+    p_s = 100.0 * 2.0 / 64                       # array SNR 20 dB with noise_sigma = 1
+    for dl, expect_loss in ((0.0, False), (0.01, True)):
+        src = (look[0] + dl, look[1])
+        scn = sc.Scenario(freqs_hz=[f], positions=pos, noise_sigma=1.0,
+                          sources=[sc.Source(*src, power=p_s, name="sun"),
+                                   sc.Source(*rfi, power=200.0, name="rfi")])
+        R = sc.analytic_covariance(scn)[0]
+        R_in = sc.analytic_covariance(scn, exclude=["sun"])[0]
+        a = sc.steer(f, *src, pos)
+        d = sc.steer(f, *look, pos)
+        s_on = sc.output_sinr(mvdr_weights(R, d)[0], a, p_s, R_in)
+        s_off = sc.output_sinr(mvdr_weights(R_in, d)[0], a, p_s, R_in)
+        if expect_loss:
+            assert 10 * np.log10(s_off / s_on) > 10.0
+        else:
+            assert s_on == pytest.approx(s_off, rel=1e-6)
