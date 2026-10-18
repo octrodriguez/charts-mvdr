@@ -101,6 +101,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   beamforming.py                # steering vectors, DFT/MVDR weights, beam response, grating lobes, (l, m) grid
   checks.py                     # pre-flight checks of MVDR assumptions
   quantization.py               # 4-bit saturation model (Bussgang gain, input sigma)
+  transients.py                 # dispersion delays, arrival times, on-pulse masks
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
   00_check_assumptions.py       # runs all checks on a frame, summary per check
@@ -122,6 +123,7 @@ tools/
   export_github_md.py           # export GitHub metadata (PRs, issues, commits)
   diagnose_astron_layout.py     # layout/convention diagnosis of correlator dumps
   make_grating_lobe_events.py   # events file with interferers near a grating lobe (+ MVDR prediction)
+  make_frb_events.py            # events file with a dispersed FRB + RFI (capture and off-pulse windows)
 legacy/                         # early exploratory scripts, kept for reference
 ```
 
