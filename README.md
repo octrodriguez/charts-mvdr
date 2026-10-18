@@ -127,7 +127,8 @@ tools/
   export_github_md.py           # export GitHub metadata (PRs, issues, commits)
   diagnose_astron_layout.py     # layout/convention diagnosis of correlator dumps
   make_grating_lobe_events.py   # events file with interferers near a grating lobe (+ MVDR prediction)
-  make_frb_events.py            # events file with a dispersed FRB + RFI (capture and off-pulse windows)
+  make_frb_events.py            # events file with a dispersed FRB + RFI (capture and off-pulse windows, frame estimate vs window)
+  compare_paired.py             # paired windows (with / without RFI): S/N relative to the clean DFT by RFI group
 legacy/                         # early exploratory scripts, kept for reference
 ```
 
@@ -168,6 +169,11 @@ python test_charts/charts_sim.py generate --duration-s 5 --antennas 64 --num-fre
 # direction (one channel each); pass the file to the generator with --events-json
 python tools/make_grating_lobe_events.py --look L M --spacing DX DY --lobe P Q \
     --channels <ch ...> --offsets <offset ...> --amp 4 --out <events.json>
+
+# Paired windows (same seed and schedule, RFI amplitude 0 in one): run 09 (or 08) on
+# both, then compare per RFI group; exits with status 2 if the windows are not paired
+python tools/compare_paired.py --rfi <rfi_out> --clean <clean_out> --window-dir <rfi_window_dir> \
+    [--group NAME=id1,id2 ...] [--csv paired.csv]
 
 # Per-channel digital gain before the 4-bit requantization (CPU tier, ~2 min):
 # flux-scale gain, k = -3 ghost level and S/N of a beam with and without the ghost,

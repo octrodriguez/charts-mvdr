@@ -17,7 +17,10 @@ prints what the capture schedule needs to sample the burst:
                      the top-channel arrival, so the leading tail is cut there
   RFI overlap        RFI events whose channels see the burst while active
   frames             estimate of the frames written (same rules as the
-                     generator's frame selection)
+                     generator's frame selection), with the dense capture of
+                     the burst in the events file (or --event-dense-s, the
+                     value passed to the generator); --compare-window lists
+                     the differences with the frames of a generated window
 
 The FRB envelope in the simulator is a Gaussian in amplitude with standard
 deviation pulse_width_ms (FWHM = 2.355 pulse_width_ms), peaking at t_start_s in
@@ -28,7 +31,9 @@ RFI events are given with --rfi as key=value tokens:
     --rfi "l=0.858 m=0.43 amp=7 t0=burst dur=0.1 ch=192 id=rfi_burst"
 t0=burst centres the event on the burst arrival in its first channel. Optional
 keys: id, type (rfi_narrow, default), persistent (0/1, default 0: persistent
-events trigger no captures). Several calls can be combined with --append.
+events trigger no captures). Several calls can be combined with --append; a
+call without --frb takes the burst (t0=burst, dense capture, report) from the
+frb event already in --out.
 
 Example (DM 10 burst at (-0.10, 0.25), 2 s window):
   python tools/make_frb_events.py --frb -0.10 0.25 --dm 10 --width-ms 2 --amp 4 \\
@@ -44,7 +49,7 @@ from pathlib import Path
 
 import numpy as np
 
-from charts_mvdr.transients import arrival_times_s, dispersion_delay_s
+from charts_mvdr.transients import arrival_times_s, burst_from_events, dispersion_delay_s
 
 FRAME_S = 1536 * 10e-6 / 3          # samples per frame x sample time
 EVENT_KEYS = ("event_id", "event_type", "t_start_s", "duration_s", "dm", "nominal_amp",
@@ -110,6 +115,21 @@ def frame_schedule(total_frames, events, background_s, dense_s, sparse_ms):
     return sorted(sel)
 
 
+def dense_capture_s(sweep_s: float, width_s: float, n_sigma: float) -> float:
+    """--event-dense-s covering the sweep plus n_sigma widths, in whole frames."""
+    return math.ceil((sweep_s + n_sigma * width_s) / FRAME_S + 1) * FRAME_S
+
+
+def written_frames(window_dir) -> list:
+    """Frame indices of a generated window, from its metadata timestamps."""
+    from charts_mvdr.data_io import load_window_dir_meta
+
+    meta = load_window_dir_meta(window_dir)
+    if "frame_time_s" not in meta:
+        raise SystemExit(f"no frame timestamps in the metadata of {window_dir}")
+    return sorted({int(round(t / FRAME_S)) for t in meta["frame_time_s"]})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -133,6 +153,11 @@ def main() -> None:
                     help="for the frame estimate (quick preset: 1.0)")
     ap.add_argument("--event-sparse-cadence-ms", type=float, default=50.0,
                     help="for the frame estimate (quick preset: 50)")
+    ap.add_argument("--event-dense-s", type=float, default=None,
+                    help="for the frame estimate: value passed to the generator "
+                         "(default: the dense capture of the burst, 0.02 without one)")
+    ap.add_argument("--compare-window", type=Path, default=None, metavar="WINDOW_DIR",
+                    help="compare the estimate with the frames of a generated window")
     ap.add_argument("--frame-mb", type=float, default=1536 * 336 * 64 / 1e6,
                     help="size of one frame [MB] for the volume estimate")
     ap.add_argument("--id", default="frb_01", help="event id of the burst")
@@ -143,11 +168,21 @@ def main() -> None:
 
     freqs = args.f0_mhz + args.df_mhz * np.arange(args.num_freq)
     f_top = float(freqs[-1])
+    events = json.loads(args.out.read_text()) if args.append and args.out.exists() else []
+    burst = None
+    if not args.frb:
+        try:
+            burst = burst_from_events(events)
+        except ValueError:
+            burst = None
+        if burst is not None:              # burst parameters from the events file
+            args.dm, args.width_ms, args.t_top = burst["dm"], burst["width_s"] * 1e3, burst["t_top_s"]
     w_s = args.width_ms * 1e-3
     sweep = float(dispersion_delay_s(freqs[0], args.dm, f_top))
     t_arr = arrival_times_s(freqs, args.dm, args.t_top, f_top)
-
-    events = json.loads(args.out.read_text()) if args.append and args.out.exists() else []
+    if burst is None and not args.frb and any(
+            "t0=burst" in s.replace(" ", "") for s in args.rfi):
+        raise SystemExit("t0=burst needs --frb or an frb event in --out (with --append)")
     new = []
     if args.frb:
         l, m = args.frb
@@ -173,8 +208,10 @@ def main() -> None:
                 raise SystemExit(f"{ev['event_id']}: channel {ch} outside 0-{args.num_freq - 1}")
     events += new
 
-    if args.frb:
-        dense = math.ceil((sweep + args.n_sigma * w_s) / FRAME_S + 1) * FRAME_S
+    if args.frb or burst is not None:
+        if burst is not None:
+            print(f"burst from {args.out.name}: {burst['id']}")
+        dense = dense_capture_s(sweep, w_s, args.n_sigma)
         off0, off1 = args.t_top - args.n_sigma * w_s, args.t_top + sweep + args.n_sigma * w_s
         frame0 = math.floor(args.t_top / FRAME_S) * FRAME_S
         trunc = np.flatnonzero(t_arr - args.n_sigma * w_s < frame0)
@@ -197,11 +234,23 @@ def main() -> None:
                           f"(burst at {', '.join(f'{t_arr[c]:.4f}' for c in hit)} s)")
     else:
         dense = 0.02
+    if args.event_dense_s is not None:
+        dense = args.event_dense_s
     n_tot = int(math.floor(args.window / FRAME_S))
     sel = frame_schedule(n_tot, events, args.background_cadence_s, dense,
                          args.event_sparse_cadence_ms)
     print(f"frames written (estimate, dense {dense:.3f} s): {len(sel)} of {n_tot}, "
           f"~{len(sel) * args.frame_mb / 1e3:.1f} GB")
+    if args.compare_window is not None:
+        got = written_frames(args.compare_window)
+        extra, missing = sorted(set(got) - set(sel)), sorted(set(sel) - set(got))
+        print(f"window frames: {len(got)}; written but not estimated: {extra or 'none'}; "
+              f"estimated but not written: {missing or 'none'}")
+        for k in extra[:10]:
+            hits = [ev["event_id"] for ev in events if not ev["is_persistent"]
+                    and ev["t_start_s"] <= (k + 1) * FRAME_S
+                    and k * FRAME_S < ev["t_start_s"] + ev["duration_s"]]
+            print(f"  frame {k} ({k * FRAME_S:.5f} s): overlaps {hits or 'no event'}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(events, indent=2) + "\n")
     print(f"{len(events)} events -> {args.out}")
