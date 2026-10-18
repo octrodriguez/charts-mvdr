@@ -19,7 +19,9 @@ Outputs:
   per-channel S/N   sum of z over the on-pulse bins / sqrt(number of bins)
   dedispersed S/N   channels shifted by their dispersion delay, z summed over the
                     unflagged channels, boxcar of ~FWHM, peak / sqrt(width * Nch)
-  waterfall.png     z(t, f) for each beam plus the dedispersed series
+  waterfall.png     z(t, f) for each beam plus the dedispersed series (--norm global:
+                    mean removed per channel, divided by the median off-pulse std,
+                    so channels with excess fluctuations stand out)
   channel_snr.png   per-channel S/N for each beam and the KL / DFT ratio
   waterfall.npz     per-channel S/N, dedispersed series and S/N, flags, and
                     (with --save-waterfall) the binned power
@@ -87,6 +89,11 @@ def main() -> None:
     ap.add_argument("--flag-channels", type=int, nargs="+", default=[])
     ap.add_argument("--samples", type=int, default=1536)
     ap.add_argument("--save-waterfall", action="store_true")
+    ap.add_argument("--norm", choices=["channel", "global"], default="channel",
+                    help="waterfall display: per-channel z-score, or mean removed per channel "
+                         "and divided by the median off-pulse std of the unflagged channels "
+                         "(shows channels with excess fluctuations); S/N always per channel")
+    ap.add_argument("--vmax", type=float, default=8.0, help="upper colour limit")
     ap.add_argument("--out", type=Path, default=Path("beamform_waterfall"))
     args = ap.parse_args()
     if args.samples % args.tbin:
@@ -196,10 +203,12 @@ def main() -> None:
     res = {}
     for n in W:
         Z = np.full_like(P[n], np.nan)
+        mu, sd = np.full(ch.size, np.nan), np.full(ch.size, np.nan)
         for c in range(ch.size):
             off = P[n][off_bin[:, c], c]
             if off.size > 2:
-                Z[:, c] = (P[n][:, c] - off.mean()) / off.std()
+                mu[c], sd[c] = off.mean(), off.std()
+                Z[:, c] = (P[n][:, c] - mu[c]) / sd[c]
         snr_ch = np.array([np.nansum(Z[on_bin[:, c], c]) / np.sqrt(max(1, np.sum(
             np.isfinite(Z[on_bin[:, c], c])))) for c in range(ch.size)])
         Zd = np.full_like(Z, np.nan)
@@ -210,7 +219,11 @@ def main() -> None:
         n_ok = np.sum(np.isfinite(Zd), axis=1)
         series = np.where(n_ok > 0, np.nansum(Zd, axis=1) / np.sqrt(np.maximum(n_ok, 1)), np.nan)
         box = np.convolve(np.nan_to_num(series), np.ones(width_b), mode="same") / np.sqrt(width_b)
-        res[n] = {"Z": Z, "snr_ch": snr_ch, "series": series, "box": box,
+        if args.norm == "global":
+            disp = (P[n] - mu) / np.nanmedian(sd[good])
+        else:
+            disp = Z
+        res[n] = {"Z": Z, "disp": disp, "mu": mu, "sd": sd, "snr_ch": snr_ch, "series": series, "box": box,
                   "dd_snr": float(np.nanmax(box)), "t_peak": float(t_bin[np.nanargmax(box)])}
 
     print(f"\nflagged channels: {np.flatnonzero(flag).size} "
@@ -219,6 +232,11 @@ def main() -> None:
     for n, r in res.items():
         print(f"{n:<10} {r['dd_snr']:16.1f} {r['t_peak']:12.4f} "
               f"{np.nanmedian(r['snr_ch'][good]):14.2f}")
+    cv_gauss = 1.0 / np.sqrt(args.tbin)
+    print(f"off-pulse std / mean per bin (circular Gaussian: {cv_gauss:.3f}): " + ", ".join(
+        f"{n} median {np.nanmedian(r['sd'][good] / r['mu'][good]):.3f} "
+        f"[{np.nanmin(r['sd'][good] / r['mu'][good]):.3f}, "
+        f"{np.nanmax(r['sd'][good] / r['mu'][good]):.3f}]" for n, r in res.items()))
     if "dft" in res:
         for n in res:
             if n != "dft":
@@ -236,6 +254,7 @@ def main() -> None:
     for n, r in res.items():
         save[f"{n}_snr_ch"], save[f"{n}_series"] = r["snr_ch"], r["series"]
         save[f"{n}_dd_snr"] = r["dd_snr"]
+        save[f"{n}_mu_off"], save[f"{n}_sd_off"] = r["mu"], r["sd"]
         if args.save_waterfall:
             save[f"{n}_power"] = P[n]
     np.savez_compressed(args.out / "waterfall.npz", **save)
@@ -246,7 +265,8 @@ def main() -> None:
     tms = (t_bin - t_top) * 1e3
     for j, (n, r) in enumerate(res.items()):
         ax = axes[0, j]
-        ax.imshow(r["Z"].T, aspect="auto", origin="lower", cmap="viridis", vmin=-2, vmax=8,
+        ax.imshow(r["disp"].T, aspect="auto", origin="lower", cmap="viridis", vmin=-2,
+                  vmax=args.vmax,
                   extent=[tms[0], tms[-1] + bin_s * 1e3, fmhz[ch[0]], fmhz[ch[-1]]],
                   interpolation="nearest")
         ax.set_title(f"{n}: dedispersed S/N {r['dd_snr']:.1f}", fontsize=10)
@@ -255,7 +275,8 @@ def main() -> None:
         axes[1, j].set_xlabel("time from top-channel arrival [ms]")
         axes[1, j].set_ylabel("dedispersed S/N")
         axes[1, j].grid(alpha=0.3)
-    fig.suptitle(f"burst {burst['id']}, DM {dm:g}: beam power z-score (bins of "
+    what = "z-score per channel" if args.norm == "channel" else "power / median noise std"
+    fig.suptitle(f"burst {burst['id']}, DM {dm:g}: beam {what} (bins of "
                  f"{bin_s * 1e6:.0f} us)", fontsize=10)
     fig.tight_layout(); fig.savefig(args.out / "waterfall.png", dpi=130); plt.close(fig)
 
