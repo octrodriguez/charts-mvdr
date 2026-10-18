@@ -145,3 +145,33 @@ def test_beam_response_any_layout():
                                ks=(1, -3))
     assert resp[0, 0] == pytest.approx(1.0)
     assert resp[1, 1] == pytest.approx(1.0)            # -3 (0.3, 0.1) as a look direction
+
+
+def test_sky_gain_reduces_to_bussgang_and_exceeds_it():
+    from charts_mvdr.ghosts import sky_gain2
+    s = 5.3
+    g2 = hermite_weights(s, 1, "round")[1] / s**2
+    assert sky_gain2(s, 0.0) == pytest.approx(g2, rel=1e-12)
+    assert sky_gain2(s, 0.86) > g2 + 0.02
+
+
+def test_sky_gain_matches_simulation():
+    from charts_mvdr.ghosts import sky_gain2
+    rng = np.random.default_rng(5)
+    N, K, sn, amp, p = 64, 100000, 2.0, 7.0, 0.4
+    phi, psi = rng.uniform(0, 2 * np.pi, N), rng.uniform(0, 2 * np.pi, N)
+
+    def cn(var, shape):
+        return (rng.normal(size=shape) + 1j * rng.normal(size=shape)) * np.sqrt(var / 2)
+
+    def q(x):
+        return np.clip(np.rint(x.real), -7, 7) + 1j * np.clip(np.rint(x.imag), -7, 7)
+
+    base = cn(amp**2, (K, 1)) * np.exp(1j * phi) + cn(2 * sn**2, (K, N))
+    y1, y0 = q(base + cn(p, (K, 1)) * np.exp(1j * psi)), q(base)
+    D = (y1.T @ y1.conj() - y0.T @ y0.conj()) / K
+    off = ~np.eye(N, dtype=bool)
+    e = np.outer(np.exp(1j * psi), np.exp(-1j * psi))
+    g_mc = np.real(np.sum((D * e.conj())[off])) / off.sum() / p
+    s, r = np.sqrt(sn**2 + amp**2 / 2), amp**2 / (amp**2 + 2 * sn**2)
+    assert g_mc == pytest.approx(sky_gain2(s, r), abs=0.015)

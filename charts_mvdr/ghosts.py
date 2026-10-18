@@ -55,7 +55,7 @@ without noise) and must be simulated (``sim_cpu`` with ``model="tone"``).
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import erf
+from scipy.special import comb, erf
 
 from charts_mvdr.beamforming import C_LIGHT, steering_vectors
 from charts_mvdr.quantization import L_SAT, RAIL
@@ -156,6 +156,27 @@ def ghost_ratio_leading(sigma_in, r, L: float = L_SAT):
     s = np.asarray(sigma_in, dtype=float)
     g = erf(L / (np.sqrt(2.0) * s))
     return L**2 * np.exp(-L**2 / s**2) * np.asarray(r, dtype=float) ** 2 / (12.0 * np.pi * s**2 * g**2)
+
+
+def sky_gain2(sigma_in: float, r: float, quantizer: str = "round", n_max: int = 201,
+              L: float = L_SAT) -> float:
+    """Flux-scale gain of a weak sky source with a strong coherent emitter present.
+
+    Bussgang's g^2 = E[Q']^2 assumes independent clipping at the two antennas.
+    With a common emitter the clipping events are correlated and, by Price's
+    theorem, the weak source passes with E[Q'(x_i) Q'(x_j)], larger than g^2.
+    Averaging over the relative phases of emitter and source (a beam far from
+    the emitter and its ghosts),
+
+        G_sky = (1 / sigma^2) sum_{n even} (c_{n+1}^2 / n!) r^n binom(n, n/2) / 2^n,
+
+    whose n = 0 term is g^2. Off-diagonal correlations only; a beam that also
+    contains a ghost of the emitter sees a lower value (mixing products).
+    """
+    a = hermite_weights(sigma_in, n_max, quantizer, L)
+    n = np.arange(0, n_max, 2)
+    return float(np.sum((n + 1) * a[n + 1] * float(r) ** n * comb(n, n // 2) / 2.0**n)
+                 / float(sigma_in) ** 2)
 
 
 # ---------------------------------------------------------------------------

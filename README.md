@@ -115,6 +115,7 @@ scripts/
   07_beam_response.py           # DFT vs MVDR beam response |w^H a(l, m)|^2 maps from correlation dumps
   08_transient_snr.py           # dispersed burst: S/N through DFT and MVDR (on, all, off-pulse covariances)
   09_beamform_waterfall.py      # voltage-domain DFT vs KL beamforming: waterfalls, per-channel and dedispersed S/N
+  10_requantization_sweep.py    # CPU tier: per-channel gain before 4-bit requantization (flux gain, ghosts, S/N)
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -167,6 +168,11 @@ python test_charts/charts_sim.py generate --duration-s 5 --antennas 64 --num-fre
 # direction (one channel each); pass the file to the generator with --events-json
 python tools/make_grating_lobe_events.py --look L M --spacing DX DY --lobe P Q \
     --channels <ch ...> --offsets <offset ...> --amp 4 --out <events.json>
+
+# Per-channel digital gain before the 4-bit requantization (CPU tier, ~2 min):
+# flux-scale gain, k = -3 ghost level and S/N of a beam with and without the ghost,
+# Gaussian vs tone emitter, as a function of G sigma_in
+python scripts/10_requantization_sweep.py --out <out_dir>
 
 # Build Kotekan and correlate a window (GPU, from trig-login01)
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh
