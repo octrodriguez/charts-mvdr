@@ -129,6 +129,7 @@ tools/
   make_grating_lobe_events.py   # events file with interferers near a grating lobe (+ MVDR prediction)
   make_frb_events.py            # events file with a dispersed FRB + RFI (capture and off-pulse windows, frame estimate vs window)
   compare_paired.py             # paired windows (with / without RFI): S/N relative to the clean DFT by RFI group
+  fig_beam_response.py          # composite beam-response figure (maps; null depth and WNG vs distance to a grating lobe, ideal model)
 legacy/                         # early exploratory scripts, kept for reference
 ```
 
@@ -174,6 +175,10 @@ python tools/make_grating_lobe_events.py --look L M --spacing DX DY --lobe P Q \
 # both, then compare per RFI group; exits with status 2 if the windows are not paired
 python tools/compare_paired.py --rfi <rfi_out> --clean <clean_out> --window-dir <rfi_window_dir> \
     [--group NAME=id1,id2 ...] [--csv paired.csv]
+
+# Composite beam-response figure from 07 outputs (normal case, grating-lobe case, sweep)
+python tools/fig_beam_response.py --normal <normal_out>/beam_response.npz:<ch> \
+    --grating <grating_out>/beam_response.npz:<ch> --events <grating_events.json> --out <fig.png>
 
 # Per-channel digital gain before the 4-bit requantization (CPU tier, ~2 min):
 # flux-scale gain, k = -3 ghost level and S/N of a beam with and without the ghost,

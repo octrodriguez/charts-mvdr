@@ -28,7 +28,9 @@ marked when the layout is a rectangular grid (spacing inferred, or --spacing).
 
 Outputs in --out: beam_response_chNNN.png per channel (maps for DFT and each
 MVDR loading, plus a cut through the look direction and the first interferer
-or grating lobe) and beam_response.npz with the maps and the table values.
+or grating lobe) and beam_response.npz with the maps, the table values, the
+antenna positions and the noise floor of F per channel (for the ideal model of
+tools/fig_beam_response.py).
 
 Example:
   python scripts/07_beam_response.py --corr-dir CORR_DIR --window-dir WINDOW_DIR \\
@@ -145,7 +147,8 @@ def main() -> None:
     save = {"look": np.array(look), "channels": np.array(args.channels),
             "freq_mhz": freq_hz[args.channels] / 1e6, "loading": np.array(args.loading),
             "loading_ref": args.loading_ref, "frames_r": np.array(idx_r),
-            "frames_f": np.array(idx_f), "grid_mask": mask, "beams": np.array(beams)}
+            "frames_f": np.array(idx_f), "grid_mask": mask, "beams": np.array(beams),
+            "pos_x": np.asarray(x, float), "pos_y": np.asarray(y, float)}
 
     print("\nResponse |w^H a|^2 in dB relative to the look direction; "
           "WNG = N ||w||^2 (0 dB for DFT)")
@@ -158,6 +161,7 @@ def main() -> None:
             mvdr_weights(F[c], d, loading=ld, loading_ref=args.loading_ref)[0]
             for ld in args.loading]
         sig_n = noise_floor(F[c])
+        save[f"ch{ch}_noise_floor"] = sig_n
         print(f"\nch {ch} ({f / 1e6:.1f} MHz), noise floor of F {sig_n:.3f}; "
               f"interferers: {[(round(a, 3), round(b, 3)) for a, b, _ in ints] or 'none'}; "
               f"grating lobes: {[(p, q, round(a, 3), round(b, 3)) for p, q, a, b in lobes] or 'none'}")
