@@ -101,6 +101,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   beamforming.py                # steering vectors, DFT/MVDR weights, beam response, grating lobes, (l, m) grid
   checks.py                     # pre-flight checks of MVDR assumptions
   quantization.py               # 4-bit saturation model (Bussgang gain, input sigma)
+  ghosts.py                     # intermodulation ghosts of 4-bit clipping: levels (Gaussian model), directions, beam hits
   transients.py                 # dispersion delays, arrival times, on-pulse masks
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
