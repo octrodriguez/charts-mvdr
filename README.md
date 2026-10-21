@@ -103,6 +103,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   quantization.py               # 4-bit saturation model (Bussgang gain, input sigma)
   ghosts.py                     # intermodulation ghosts of 4-bit clipping: levels (Gaussian model), directions, beam hits
   transients.py                 # dispersion delays, arrival times, on-pulse masks
+  fringes.py                    # coherence with a geometric fringe model: baseline fit, channel classification
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
   00_check_assumptions.py       # runs all checks on a frame, summary per check
@@ -116,6 +117,7 @@ scripts/
   08_transient_snr.py           # dispersed burst: S/N through DFT and MVDR (on, all, off-pulse covariances)
   09_beamform_waterfall.py      # voltage-domain DFT vs KL beamforming: waterfalls, per-channel and dedispersed S/N
   10_requantization_sweep.py    # CPU tier: per-channel gain before 4-bit requantization (flux gain, ghosts, S/N)
+  11_fringe_coherence.py        # real frames: baseline fit per band and source/conjugate/stationary channel classes
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -184,6 +186,12 @@ python tools/fig_beam_response.py --normal <normal_out>/beam_response.npz:<ch> \
 # flux-scale gain, k = -3 ghost level and S/N of a beam with and without the ghost,
 # Gaussian vs tone emitter, as a function of G sigma_in
 python scripts/10_requantization_sweep.py --out <out_dir>
+
+# Real GPU correlation frames: coherence with the Sun's fringe model (no gain calibration needed).
+# Baseline vector fitted per band vs the layout, its negative (conjugated data) and zero
+# (stationary signal); per-channel classes saved to <out_dir>/fringe_coherence.npz
+python scripts/11_fringe_coherence.py --input <frame_dir> --antennas <a,b,c> --positions <positions.npy> \
+    --time-start <ISO UTC> --time-stop <ISO UTC> --out <out_dir> [--bands 300-410 431-501.6] [--exclude 360-381.5]
 
 # Build Kotekan and correlate a window (GPU, from trig-login01)
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh
