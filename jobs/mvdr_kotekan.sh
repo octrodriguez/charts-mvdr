@@ -12,7 +12,8 @@
 #   sbatch --export=ALL,KOTEKAN_SRC=$SCRATCH/kotekan-wt/feat-mvdr-stage,\
 #   WINDOW_DIR=$SCRATCH/data/sim_test/clean_v2/charts_sim_64ant,BEAMS="0.4677 0.4801",LABEL=clean_v2 \
 #          jobs/mvdr_kotekan.sh
-# Optional: H (40), GUARD (1), UPDATE_EVERY (1), LOADING (10), LOADING_REF (noise), GAINS (.npy).
+# Optional: H (40), GUARD (1), UPDATE_EVERY (1), LOADING (10), LOADING_REF (noise), GAINS (.npy),
+# ANTENNA_ORDER (descending: correlator element e holds logical antenna N-1-e of the gains file).
 set -euo pipefail
 SRC="${KOTEKAN_SRC:?set KOTEKAN_SRC to the Kotekan worktree with a built binary}"
 WIN_DIR="${WINDOW_DIR:?set WINDOW_DIR to the directory with <window>_%07d.bin frames}"
@@ -26,6 +27,7 @@ UPDATE_EVERY="${UPDATE_EVERY:-1}"
 LOADING="${LOADING:-10}"
 LOADING_REF="${LOADING_REF:-noise}"
 GAINS="${GAINS:-}"
+ANTENNA_ORDER="${ANTENNA_ORDER:-descending}"
 LABEL="${LABEL:-$WINDOW}"
 OUT="$SCRATCH/data/kotekan_mvdr/${LABEL}_${SLURM_JOB_ID}"
 MVDR="$SCRATCH/charts-mvdr"
@@ -42,11 +44,11 @@ echo "Window $WINDOW: $N_FRAMES frames, beams $BEAMS, H=$H g=$GUARD U=$UPDATE_EV
 
 # 1) Kotekan config: positions and channel frequencies from the window metadata
 python - "$SRC" "$WIN_DIR" "$WINDOW" "$OUT" "$N_FRAMES" "$NUM_ANT" "$NUM_FREQ" "$BEAMS" \
-    "$H" "$GUARD" "$UPDATE_EVERY" "$LOADING" "$LOADING_REF" "$GAINS" << 'PY'
+    "$H" "$GUARD" "$UPDATE_EVERY" "$LOADING" "$LOADING_REF" "$GAINS" "$ANTENNA_ORDER" << 'PY'
 import sys
 from pathlib import Path
 import numpy as np
-src, win_dir, window, out, n, n_ant, n_freq, beams, h, g, u, loading, lref, gains = sys.argv[1:]
+src, win_dir, window, out, n, n_ant, n_freq, beams, h, g, u, loading, lref, gains, order = sys.argv[1:]
 sys.path.insert(0, str(Path(src) / "test_charts"))
 from sim.mvdr import create_mvdr_yaml
 from charts_mvdr.data_io import load_window_dir_meta
@@ -63,7 +65,7 @@ create_mvdr_yaml(
     beams=list(zip(b[0::2], b[1::2])), freq_start_mhz=float(f[0]), delta_freq_mhz=df,
     num_elements=int(n_ant), num_local_freq=int(n_freq), cov_half_window=int(h),
     cov_guard=int(g), update_every=int(u), loading=float(loading), loading_ref=lref,
-    gains_file=Path(gains) if gains else None,
+    gains_file=Path(gains) if gains else None, antenna_order=order,
 )
 print("config:", Path(out) / "mvdr.yaml", f"f0 {f[0]} MHz, df {df} MHz")
 PY
@@ -83,5 +85,6 @@ GAINS_ARG=()
 python "$MVDR/scripts/13_compare_kotekan_mvdr.py" --run-dir "$OUT" --window-dir "$WIN_DIR" \
     --beams $BEAMS --num-freq "$NUM_FREQ" --num-ant "$NUM_ANT" --half-window "$H" \
     --guard "$GUARD" --update-every "$UPDATE_EVERY" --loading "$LOADING" \
-    --loading-ref "$LOADING_REF" "${GAINS_ARG[@]}" --out "$OUT/stage_output.npz" \
+    --loading-ref "$LOADING_REF" --antenna-order "$ANTENNA_ORDER" "${GAINS_ARG[@]}" \
+    --out "$OUT/stage_output.npz" \
     | tee "$OUT/comparison.txt"

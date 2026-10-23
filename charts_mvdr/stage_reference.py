@@ -19,8 +19,11 @@ update are flagged (NaN power). An update is skipped when n_t < min_frames.
 
 Optional complex antenna gains follow the charts-utils convention
 (v_obs = g v, charts_utils.cal.algorithms.apply_gains): covariances are
-corrected as G^-1 R G^-H. Antennas whose gain is NaN in a channel are left out
-of that channel (zero weight).
+corrected as G^-1 R G^-H. The gains are indexed by logical antenna (the gains
+file order); correlator element e holds antenna n - 1 - e with antenna_order
+"descending" (default, as the baseband frames and cudaDirectBeamTracker) or e
+with "ascending". Antennas whose gain is NaN in a channel are left out of that
+channel (zero weight).
 
 Every rule here is mirrored by the Kotekan stage; scripts compare the two with a
 floating-point tolerance, not an exact match.
@@ -42,6 +45,14 @@ def window_indices(t: int, n_frames: int, half_window: int, guard: int) -> np.nd
         raise ValueError("need half_window >= 1 and 0 <= guard < half_window")
     k = np.arange(max(0, t - half_window), min(n_frames, t + half_window + 1))
     return k[np.abs(k - t) > guard]
+
+
+def element_to_antenna(n: int, antenna_order: str = "descending") -> np.ndarray:
+    """Logical antenna of each correlator element: n - 1 - e (descending) or e."""
+    if antenna_order not in ("descending", "ascending"):
+        raise ValueError("antenna_order must be descending or ascending")
+    e = np.arange(n)
+    return n - 1 - e if antenna_order == "descending" else e
 
 
 def load_gains(path, channels=None, n_ant: int | None = None) -> np.ndarray:
@@ -83,8 +94,11 @@ class StageConfig:
     update_every: int = 1
     loading: float = 10.0
     loading_ref: str = "noise"
+    antenna_order: str = "descending"
 
     def __post_init__(self):
+        if self.antenna_order not in ("descending", "ascending"):
+            raise ValueError("antenna_order must be descending or ascending")
         if self.min_frames is None:
             self.min_frames = self.half_window - self.guard
         if self.update_every < 1:
@@ -106,7 +120,8 @@ def run_stage(S: np.ndarray, freqs_hz, cfg: StageConfig, gains=None) -> StageOut
     """Run the stage on correlation sums S (n_frames, n_chan, n_ant, n_ant).
 
     freqs_hz holds one frequency per channel of S; gains, if given, is
-    (n_chan, n_ant) for the same channels.
+    (n_chan, n_ant) for the same channels, indexed by logical antenna
+    (reordered to elements with cfg.antenna_order).
     """
     S = np.asarray(S)
     n_frames, n_chan, n_ant, _ = S.shape
@@ -119,6 +134,7 @@ def run_stage(S: np.ndarray, freqs_hz, cfg: StageConfig, gains=None) -> StageOut
         gains = np.asarray(gains, dtype=np.complex128)
         if gains.shape != (n_chan, n_ant):
             raise ValueError("gains must be (n_chan, n_ant)")
+        gains = gains[:, element_to_antenna(n_ant, cfg.antenna_order)]
 
     def corrected(R, c):
         return R if gains is None else correct_gains(R, gains[c])

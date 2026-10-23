@@ -93,25 +93,43 @@ def test_flags_before_first_update_and_update_every():
     assert np.isfinite(out.power[0]).all()
 
 
-def test_gains_are_removed():
+@pytest.mark.parametrize("order", ["descending", "ascending"])
+def test_gains_are_removed(order):
+    from charts_mvdr.stage_reference import element_to_antenna
+
     S, x, y = scene()
     rng = np.random.default_rng(3)
     n = x.size
     g = (1 + 0.3 * rng.random((2, n))) * np.exp(1j * rng.uniform(-np.pi, np.pi, (2, n)))
-    Sg = S * g[None, :, :, None] * g.conj()[None, :, None, :]
+    ge = g[:, element_to_antenna(n, order)]          # gain of each correlator element
+    Sg = S * ge[None, :, :, None] * ge.conj()[None, :, None, :]
     ref = run_stage(S, [F0, F0], cfg(x, y))
-    out = run_stage(Sg, [F0, F0], cfg(x, y), gains=g)
+    out = run_stage(Sg, [F0, F0], cfg(x, y, antenna_order=order), gains=g)
     np.testing.assert_allclose(out.power, ref.power, rtol=1e-9)
+    # the wrong order does not remove them
+    other = "ascending" if order == "descending" else "descending"
+    bad = run_stage(Sg, [F0, F0], cfg(x, y, antenna_order=other), gains=g)
+    assert not np.allclose(bad.power, ref.power, rtol=1e-3)
+
+
+def test_element_to_antenna():
+    from charts_mvdr.stage_reference import element_to_antenna
+
+    assert element_to_antenna(4).tolist() == [3, 2, 1, 0]
+    assert element_to_antenna(4, "ascending").tolist() == [0, 1, 2, 3]
+    with pytest.raises(ValueError):
+        element_to_antenna(4, "random")
 
 
 def test_nan_gain_drops_antenna():
     S, x, y = scene()
     n = x.size
     g = np.ones((2, n), complex)
-    g[0, 5] = np.nan
+    g[0, 5] = np.nan                    # antenna 5 = element n - 1 - 5 (descending)
+    e = n - 1 - 5
     out = run_stage(S, [F0, F0], cfg(x, y), gains=g)
-    assert np.all(out.weights[0][0, :, 5] == 0)
-    keep = np.r_[0:5, 6:n]
+    assert np.all(out.weights[0][0, :, e] == 0)
+    keep = np.r_[0:e, e + 1:n]
     sub = run_stage(S[:, :, keep][:, :, :, keep], [F0, F0], cfg(x[keep], y[keep]))
     np.testing.assert_allclose(out.power[:, :, 0], sub.power[:, :, 0], rtol=1e-10)
     np.testing.assert_allclose(out.weights[0][0][:, keep], sub.weights[0][0], rtol=1e-10)

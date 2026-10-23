@@ -50,6 +50,9 @@ def parse_args(argv=None):
     ap.add_argument("--update-every", type=int, default=1)
     ap.add_argument("--loading", type=float, default=10.0)
     ap.add_argument("--loading-ref", default="noise", choices=("noise", "trace", "absolute"))
+    ap.add_argument("--antenna-order", choices=("descending", "ascending"),
+                    default="descending",
+                    help="logical antenna of correlator element e for the gains file")
     ap.add_argument("--gains", type=Path, default=None,
                     help="complex (n_freq, n_ant) .npy, charts-utils convention v_obs = g v")
     ap.add_argument("--chunk", type=int, default=48, help="channels per pass")
@@ -72,7 +75,8 @@ def main(argv=None):
                       samples_per_frame=args.samples_per_frame,
                       half_window=args.half_window, guard=args.guard,
                       min_frames=args.min_frames, update_every=args.update_every,
-                      loading=args.loading, loading_ref=args.loading_ref)
+                      loading=args.loading, loading_ref=args.loading_ref,
+                      antenna_order=args.antenna_order)
     gains_all = (load_gains(args.gains, n_ant=args.num_ant) if args.gains is not None
                  else None)
 
