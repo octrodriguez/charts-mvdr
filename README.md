@@ -120,11 +120,13 @@ scripts/
   10_requantization_sweep.py    # CPU tier: per-channel gain before 4-bit requantization (flux gain, ghosts, S/N)
   11_fringe_coherence.py        # real frames: baseline fit per band and source/conjugate/stationary channel classes
   12_stage_reference.py         # reference of the Kotekan MVDR stage: beam power per frame/channel/beam, weights
+  13_compare_kotekan_mvdr.py    # Kotekan chartsMVDRBeams output vs the reference on the same frames
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
   correlate_kotekan.sh          # Slurm: Kotekan correlator on a window + comparison
   analyze_window.sh             # Slurm: 05 and 06 on a correlated window (runs from a text file)
+  mvdr_kotekan.sh               # Slurm: correlator + chartsMVDRBeams on a window, comparison with 13
 tests/                          # pytest suite (no external data needed)
 tools/
   export_md.py                  # export tracked source files as one Markdown bundle
@@ -200,6 +202,11 @@ python scripts/11_fringe_coherence.py --input <frame_dir> --antennas <a,b,c> --p
 # beam power per frame, channel and beam, weights at each update (npz)
 python scripts/12_stage_reference.py --corr-dir <corr_dir> --window-dir <window_dir> \
     --beams <l1> <m1> [<l2> <m2> ...] --out <out.npz> [--half-window 10 --guard 1 --gains <gains.npy>]
+
+# Kotekan MVDR stage on a window and comparison with the reference (GPU, from trig-login01);
+# outputs in $SCRATCH/data/kotekan_mvdr/<label>_<jobid>/{corr,mvdr}, verdict in comparison.txt
+sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir>,BEAMS="<l1> <m1> ...",LABEL=<label> \
+    jobs/mvdr_kotekan.sh
 
 # Build Kotekan and correlate a window (GPU, from trig-login01)
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh

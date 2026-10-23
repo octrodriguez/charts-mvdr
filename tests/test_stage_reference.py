@@ -197,3 +197,80 @@ def test_script_end_to_end(tmp_path):
     np.testing.assert_allclose(z["power"][:, :, :, 0], ref.power[:, :, :, 0], rtol=1e-3)
     # the second beam looks at the interferer: MVDR keeps it (distortionless)
     assert np.all(z["power"][1, :, :, 1] > 50)
+
+
+def _write_raw(path, payload: bytes, meta: bytes = b"m" * 21):
+    with open(path, "wb") as f:
+        np.uint32(len(meta)).tofile(f)
+        f.write(meta)
+        f.write(payload)
+
+
+def _fake_kotekan_run(tmp_path, n_frames=8, perturb=0.0):
+    """Correlation dumps plus stage output files written from the reference itself."""
+    import importlib.util
+    from pathlib import Path
+
+    import h5py
+
+    spec = importlib.util.spec_from_file_location(
+        "tdio", Path(__file__).with_name("test_data_io.py"))
+    tdio = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tdio)
+    S, x, y = scene(n_frames=n_frames, n_chan=3, burst_frame=4)
+    win, run = tmp_path / "win", tmp_path / "run"
+    (run / "corr").mkdir(parents=True)
+    (run / "mvdr").mkdir()
+    win.mkdir()
+    with h5py.File(win / "w_meta.h5", "w") as f:
+        f["antenna_pos_x_m"], f["antenna_pos_y_m"] = x, y
+        f["frequencies_mhz"] = np.full(3, F0 / 1e6)
+    for t in range(n_frames):
+        tdio.write_astron(run / "corr" / f"corr_{t:07d}.bin", S[t])
+    beams = [(-0.1, 0.25), (0.5, 0.2)]
+    from charts_mvdr.stage_reference import load_correlation_stack
+
+    _, Sr = load_correlation_stack(run / "corr", 3, x.size)
+    cfgr = StageConfig(beams=beams, positions_x_m=x, positions_y_m=y, samples_per_frame=KS,
+                       half_window=3)
+    ref = run_stage(Sr, np.full(3, F0), cfgr)
+    for t in range(n_frames):
+        p = ref.power[:, t].astype("<f4") * (1 + perturb)
+        _write_raw(run / "mvdr" / f"mvdr_power_{t:07d}.bin", p.tobytes())
+    for i, t in enumerate(ref.update_frames):
+        hdr = np.array([t, ref.n_window[t]], "<i8").tobytes()
+        w = ref.weights[i].astype("<c8").tobytes()
+        g = ref.wng[i].astype("<f4").tobytes()
+        _write_raw(run / "mvdr" / f"mvdr_weights_{i:07d}.bin", hdr + w + g)
+    return run, win, ref, x.size
+
+
+def test_read_stage_outputs(tmp_path):
+    from charts_mvdr.stage_reference import read_stage_power, read_stage_weights
+
+    run, _, ref, n = _fake_kotekan_run(tmp_path)
+    P = read_stage_power(run / "mvdr", 3, 2)
+    np.testing.assert_allclose(P, ref.power, rtol=1e-6)
+    W = read_stage_weights(run / "mvdr", 3, 2, n)
+    assert W["update_frames"].tolist() == ref.update_frames
+    np.testing.assert_allclose(W["weights"], np.asarray(ref.weights), rtol=1e-6, atol=1e-9)
+    with pytest.raises(ValueError):
+        read_stage_power(run / "mvdr", 3, 3)
+
+
+@pytest.mark.parametrize("perturb, code", [(0.0, 0), (1e-3, 1)])
+def test_compare_script(tmp_path, perturb, code):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    run, win, _, n = _fake_kotekan_run(tmp_path, perturb=perturb)
+    root = Path(__file__).resolve().parents[1]
+    r = subprocess.run([sys.executable, str(root / "scripts" / "13_compare_kotekan_mvdr.py"),
+                        "--run-dir", str(run), "--window-dir", str(win), "--num-freq", "3",
+                        "--num-ant", str(n), "--half-window", "3", "--chunk", "2",
+                        "--beams", "-0.1", "0.25", "0.5", "0.2",
+                        "--out", str(tmp_path / "st.npz")], capture_output=True, text=True)
+    assert r.returncode == code, r.stdout + r.stderr
+    assert ("MVDR STAGE MATCH" in r.stdout) == (code == 0)
+    assert np.load(tmp_path / "st.npz")["power"].shape == (2, 8, 3, 2)
