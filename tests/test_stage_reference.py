@@ -34,6 +34,7 @@ def scene(n_frames=12, n_chan=2, burst_frame=None, rfi=100.0, sig=0.05, seed=0):
 
 
 def cfg(x, y, **kw):
+    kw.setdefault("half_window", 4)   # short synthetic streams (the default 40 needs >= 40 frames)
     return StageConfig(beams=[(-0.1, 0.25)], positions_x_m=x, positions_y_m=y,
                        samples_per_frame=KS, **kw)
 
@@ -274,3 +275,9 @@ def test_compare_script(tmp_path, perturb, code):
     assert r.returncode == code, r.stdout + r.stderr
     assert ("MVDR STAGE MATCH" in r.stdout) == (code == 0)
     assert np.load(tmp_path / "st.npz")["power"].shape == (2, 8, 3, 2)
+
+
+def test_default_window():
+    c = StageConfig(beams=[(0, 0)], positions_x_m=np.zeros(2), positions_y_m=np.zeros(2),
+                    samples_per_frame=1)
+    assert (c.half_window, c.guard, c.min_frames, c.update_every) == (40, 1, 39, 1)

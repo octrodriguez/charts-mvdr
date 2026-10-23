@@ -44,7 +44,7 @@ def parse_args(argv=None):
     ap.add_argument("--num-freq", type=int, default=336)
     ap.add_argument("--num-ant", type=int, default=64)
     ap.add_argument("--samples-per-frame", type=int, default=1536)
-    ap.add_argument("--half-window", type=int, default=10)
+    ap.add_argument("--half-window", type=int, default=40)
     ap.add_argument("--guard", type=int, default=1)
     ap.add_argument("--min-frames", type=int, default=None)
     ap.add_argument("--update-every", type=int, default=1)

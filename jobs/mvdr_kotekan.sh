@@ -12,7 +12,7 @@
 #   sbatch --export=ALL,KOTEKAN_SRC=$SCRATCH/kotekan-wt/feat-mvdr-stage,\
 #   WINDOW_DIR=$SCRATCH/data/sim_test/clean_v2/charts_sim_64ant,BEAMS="0.4677 0.4801",LABEL=clean_v2 \
 #          jobs/mvdr_kotekan.sh
-# Optional: H (10), GUARD (1), UPDATE_EVERY (1), LOADING (10), LOADING_REF (noise), GAINS (.npy).
+# Optional: H (40), GUARD (1), UPDATE_EVERY (1), LOADING (10), LOADING_REF (noise), GAINS (.npy).
 set -euo pipefail
 SRC="${KOTEKAN_SRC:?set KOTEKAN_SRC to the Kotekan worktree with a built binary}"
 WIN_DIR="${WINDOW_DIR:?set WINDOW_DIR to the directory with <window>_%07d.bin frames}"
@@ -20,7 +20,7 @@ BEAMS="${BEAMS:?set BEAMS to look directions, e.g. \"0.4677 0.4801 -0.10 0.25\"}
 WINDOW="${WINDOW:-$(basename "$WIN_DIR")}"
 NUM_FREQ="${NUM_FREQ:-336}"
 NUM_ANT="${NUM_ANT:-64}"
-H="${H:-10}"
+H="${H:-40}"
 GUARD="${GUARD:-1}"
 UPDATE_EVERY="${UPDATE_EVERY:-1}"
 LOADING="${LOADING:-10}"

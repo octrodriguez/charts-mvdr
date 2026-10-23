@@ -77,7 +77,7 @@ class StageConfig:
     positions_x_m: np.ndarray
     positions_y_m: np.ndarray
     samples_per_frame: int
-    half_window: int = 10            # cov_half_window
+    half_window: int = 40            # cov_half_window
     guard: int = 1                   # cov_guard
     min_frames: int | None = None    # cov_min_frames (default half_window - guard)
     update_every: int = 1
