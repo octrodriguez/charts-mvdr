@@ -15,9 +15,17 @@ channel, excluding the on frames and --guard-frames on each side. For each beamf
     S = mean_on P - mean_off P,    sigma = std_off P,    S/N_c = S / (sigma / sqrt(n_on))
 
 sigma is the fluctuation of the beam power, the quantity a detection pipeline sees (09
-metric), not its mean. The dedispersed S/N adds the channels with equal weight:
+metric), not its mean. Two dedispersed S/N are given:
 
-    S/N_tot = sum_c S_c / sqrt(sum_c sigma_c^2 / n_on_c).
+    equal weight:  S/N_tot = sum_c S_c / sqrt(sum_c sigma_c^2 / n_on_c)
+    z-score:       S/N_z   = sum_c (S_c / sigma_c) / sqrt(sum_c 1 / n_on_c)
+
+The z-score form normalizes each channel by its own fluctuation before adding, as a search
+pipeline (and 09) does, so channels with strong residual RFI are down-weighted; the equal
+weight form lets them dominate the noise.
+
+--detail CH prints, for channel CH, the off-pulse mean and sigma and the on-pulse excess of
+each plane and window (to tell a larger fluctuation from a smaller signal).
 
 Everything is reported in dB relative to the DFT of the clean window (10 log10 of S/N
 ratios). Channels whose leading tail is cut by the simulator are excluded (as in 08/09),
@@ -107,6 +115,7 @@ def main(argv=None):
     ap.add_argument("--guard-frames", type=int, default=1)
     ap.add_argument("--min-off", type=int, default=4)
     ap.add_argument("--groups", nargs="*", default=None)
+    ap.add_argument("--detail", type=int, nargs="*", default=[], help="channels to detail")
     ap.add_argument("--out", type=Path, default=None, help="per-channel table (npz)")
     args = ap.parse_args(argv)
 
@@ -143,7 +152,15 @@ def main(argv=None):
     ref = tot[("clean", "dft")]
     print(f"{'dedispersed':12s} {db(tot[('clean', 'mvdr')] / ref):10.2f} "
           f"{db(tot[('rfi', 'dft')] / ref):9.2f} {db(tot[('rfi', 'mvdr')] / ref):9.2f}"
-          f"   (clean DFT S/N {ref:.1f})")
+          f"   (equal weight; clean DFT S/N {ref:.1f})")
+    totz = {}
+    for key, (S, s, n) in res.items():
+        u = usable & np.isfinite(S) & np.isfinite(s) & (s > 0)
+        totz[key] = np.sum(S[u] / s[u]) / np.sqrt(np.sum(1.0 / n[u]))
+    refz = totz[("clean", "dft")]
+    print(f"{'dedisp. z':12s} {db(totz[('clean', 'mvdr')] / refz):10.2f} "
+          f"{db(totz[('rfi', 'dft')] / refz):9.2f} {db(totz[('rfi', 'mvdr')] / refz):9.2f}"
+          f"   (z-score; clean DFT S/N {refz:.1f})")
 
     groups = parse_groups(args.groups)
     in_group = set()
@@ -162,13 +179,28 @@ def main(argv=None):
                                                       ("rfi", "mvdr"))]
         print(f"{'other':12s} {med[0]:10.2f} {med[1]:9.2f} {med[2]:9.2f}   n={sel.sum()}")
 
+    for chn in args.detail:
+        c = int(np.flatnonzero(chans == chn)[0]) if np.any(chans == chn) else None
+        if c is None:
+            print(f"channel {chn} not in the npz")
+            continue
+        print(f"\nchannel {chn}: {int(on[:, c].sum())} on / {int(off[:, c].sum())} off frames")
+        for name, z in (("clean", zc), ("rfi", zr)):
+            for plane, kind in ((0, "dft"), (1, "mvdr")):
+                P = z["power"][plane, :, c, args.beam]
+                mo, so = P[off[:, c]].mean(), P[off[:, c]].std(ddof=1)
+                print(f"  {name:5s} {kind:4s} off mean {mo:9.4f}  off sigma {so:8.4f}  "
+                      f"on excess {P[on[:, c]].mean() - mo:8.4f}")
+
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         np.savez(args.out, channels=chans, usable=usable, clean_dft_snr=snr0,
                  clean_mvdr_db=table[("clean", "mvdr")], rfi_dft_db=table[("rfi", "dft")],
                  rfi_mvdr_db=table[("rfi", "mvdr")],
                  dedispersed_db=np.array([db(tot[k] / ref) for k in
-                                          (("clean", "mvdr"), ("rfi", "dft"), ("rfi", "mvdr"))]))
+                                          (("clean", "mvdr"), ("rfi", "dft"), ("rfi", "mvdr"))]),
+                 dedispersed_z_db=np.array([db(totz[k] / refz) for k in
+                                            (("clean", "mvdr"), ("rfi", "dft"), ("rfi", "mvdr"))]))
         print(f"saved {args.out}")
 
 

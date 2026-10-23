@@ -46,7 +46,7 @@ def test_paired_snr(tmp_path):
     r = subprocess.run([sys.executable, str(ROOT / "scripts" / "14_stage_transient_snr.py"),
                         "--rfi", str(tmp_path / "rfi.npz"), "--clean",
                         str(tmp_path / "clean.npz"), "--window-dir", str(win),
-                        "--groups", "R:1-2", "--out", str(tmp_path / "t.npz")],
+                        "--groups", "R:1-2", "--detail", "1", "--out", str(tmp_path / "t.npz")],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     t = np.load(tmp_path / "t.npz")
@@ -58,4 +58,8 @@ def test_paired_snr(tmp_path):
     np.testing.assert_allclose(t["rfi_dft_db"][[0, 3, 4, 5]], 0.0, atol=1e-5)
     ded = t["dedispersed_db"]
     assert abs(ded[0]) < 1e-5 and abs(ded[2]) < 1e-5 and ded[1] < 0
-    assert "R " in r.stdout and "other" in r.stdout
+    assert "R " in r.stdout and "other" in r.stdout and "channel 1:" in r.stdout
+    dz = t["dedispersed_z_db"]
+    assert abs(dz[0]) < 1e-5 and abs(dz[2]) < 1e-5
+    # z-score down-weights the RFI channels: a smaller dedispersed loss than equal weight
+    assert ded[1] < dz[1] < 0
