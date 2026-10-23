@@ -199,3 +199,18 @@ def mean_correlation(paths, num_freq: int, num_ant: int, samples: int = SAMPLES_
         Rk = read_astron_correlation(p, num_freq, num_ant)[sel]
         R = Rk if R is None else R + Rk
     return R / (len(paths) * samples)
+
+
+def read_rawfile_payload(path) -> bytes:
+    """Data of one Kotekan rawFileWrite file: skips the uint32 metadata size and the metadata."""
+    raw = Path(path).read_bytes()
+    meta_size = int(np.frombuffer(raw[:4], "<u4")[0])
+    return raw[4 + meta_size:]
+
+
+def numbered_files(directory, prefix: str) -> list:
+    """Paths <prefix>_%07d.bin in directory, sorted by index."""
+    rx = re.compile(rf"^{re.escape(prefix)}_(\d{{7}})\.bin$")
+    files = [(int(m.group(1)), p) for p in Path(directory).glob(f"{prefix}_*.bin")
+             if (m := rx.match(p.name))]
+    return [p for _, p in sorted(files)]

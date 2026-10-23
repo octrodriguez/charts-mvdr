@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from .beamforming import dft_weights, mvdr_weights, steering_vectors
+from .data_io import numbered_files, read_rawfile_payload
 
 
 def window_indices(t: int, n_frames: int, half_window: int, guard: int) -> np.ndarray:
@@ -188,32 +189,16 @@ def load_correlation_stack(corr_dir, num_freq: int, num_ant: int, channels=None)
     return idx, stack
 
 
-def _rawfile_payload(path) -> bytes:
-    """Data of one rawFileWrite file: skip the uint32 metadata size and the metadata."""
-    raw = Path(path).read_bytes()
-    meta_size = int(np.frombuffer(raw[:4], "<u4")[0])
-    return raw[4 + meta_size:]
-
-
-def _numbered(directory, prefix: str) -> list:
-    import re
-
-    rx = re.compile(rf"^{re.escape(prefix)}_(\d{{7}})\.bin$")
-    files = [(int(m.group(1)), p) for p in Path(directory).glob(f"{prefix}_*.bin")
-             if (m := rx.match(p.name))]
-    return [p for _, p in sorted(files)]
-
-
 def read_stage_power(directory, num_freq: int, num_beams: int) -> np.ndarray:
     """Beam power written by chartsMVDRBeams (mvdr_power_%07d.bin), (2, n_frames, num_freq,
     num_beams): plane 0 DFT, plane 1 MVDR (NaN before the first update)."""
-    files = _numbered(directory, "mvdr_power")
+    files = numbered_files(directory, "mvdr_power")
     if not files:
         raise FileNotFoundError(f"no mvdr_power_*.bin in {directory}")
     size = 2 * num_freq * num_beams
     frames = []
     for p in files:
-        d = np.frombuffer(_rawfile_payload(p), "<f4")
+        d = np.frombuffer(read_rawfile_payload(p), "<f4")
         if d.size != size:
             raise ValueError(f"{p}: {d.size} values, expected {size}")
         frames.append(d.reshape(2, num_freq, num_beams))
@@ -226,11 +211,11 @@ def read_stage_weights(directory, num_freq: int, num_beams: int, num_elements: i
     Returns update_frames, n_window (n_update,), weights (n_update, num_freq, num_beams,
     num_elements) complex64 and wng (n_update, num_freq, num_beams).
     """
-    files = _numbered(directory, "mvdr_weights")
+    files = numbered_files(directory, "mvdr_weights")
     nw = num_freq * num_beams * num_elements
     out = {"update_frames": [], "n_window": [], "weights": [], "wng": []}
     for p in files:
-        d = _rawfile_payload(p)
+        d = read_rawfile_payload(p)
         expected = 16 + nw * 8 + num_freq * num_beams * 4
         if len(d) != expected:
             raise ValueError(f"{p}: {len(d)} bytes, expected {expected}")

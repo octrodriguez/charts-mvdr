@@ -128,6 +128,7 @@ jobs/
   correlate_kotekan.sh          # Slurm: Kotekan correlator on a window + comparison
   analyze_window.sh             # Slurm: 05 and 06 on a correlated window (runs from a text file)
   mvdr_kotekan.sh               # Slurm: correlator + chartsMVDRBeams on a window, comparison with 13
+  tracker_gains_poc.sh          # Slurm: calibration test of cudaDirectBeamTracker with known gains
 tests/                          # pytest suite (no external data needed)
 tools/
   export_md.py                  # export tracked source files as one Markdown bundle
@@ -136,6 +137,8 @@ tools/
   make_grating_lobe_events.py   # events file with interferers near a grating lobe (+ MVDR prediction)
   make_frb_events.py            # events file with a dispersed FRB + RFI (capture and off-pulse windows, frame estimate vs window)
   compare_paired.py             # paired windows (with / without RFI): S/N relative to the clean DFT by RFI group
+  apply_test_gains.py           # known quarter-turn gains on a window + charts-utils gains file
+  compare_tracker_beams.py      # complex scale and residual between two tracker runs
   fig_beam_response.py          # composite beam-response figure (maps; null depth and WNG vs distance to a grating lobe, ideal model)
 legacy/                         # early exploratory scripts, kept for reference
 ```
