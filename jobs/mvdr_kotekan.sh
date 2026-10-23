@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=00:45:00
+#SBATCH --time=01:30:00
 #SBATCH --output=kotekan_mvdr_%j.out
 
 # Replay a baseband window through the Kotekan correlator and the chartsMVDRBeams stage, then

@@ -121,6 +121,7 @@ scripts/
   11_fringe_coherence.py        # real frames: baseline fit per band and source/conjugate/stationary channel classes
   12_stage_reference.py         # reference of the Kotekan MVDR stage: beam power per frame/channel/beam, weights
   13_compare_kotekan_mvdr.py    # Kotekan chartsMVDRBeams output vs the reference on the same frames
+  14_stage_transient_snr.py     # burst S/N in the stage beam power, paired windows (per channel, group, dedispersed)
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
