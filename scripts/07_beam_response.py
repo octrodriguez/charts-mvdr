@@ -22,6 +22,13 @@ and infinite integration F^-1 d and R^-1 d give the same normalized weights
 (matrix inversion lemma); they differ under steering errors (self-nulling of
 the source) and finite integration.
 
+With --stage-npz the MVDR weights are not computed here but taken from the output of the
+Kotekan stage chartsMVDRBeams (stage_output.npz of 13_compare_kotekan_mvdr.py, or the npz of
+12_stage_reference.py): the weights of the update in force at frame --stage-frame (default:
+the middle of the window) for the stage beam closest to --look. The maps then show the beam
+response of the weights Kotekan applied; the table and the npz have one MVDR beam labelled
+with the loading of the stage run, so tools/fig_beam_response.py works unchanged.
+
 Interferer directions come from the events file in --window-dir (simulations)
 or from --interferer L M (repeatable). Grating lobes of the look direction are
 marked when the layout is a rectangular grid (spacing inferred, or --spacing).
@@ -58,6 +65,37 @@ from charts_mvdr.data_io import (interferers_by_channel, list_correlation_dumps,
 
 def db(x, floor=1e-12):
     return 10.0 * np.log10(np.maximum(x, floor))
+
+
+def load_stage_weights(path, look, channels, frame=None):
+    """MVDR weights of a chartsMVDRBeams run for the given channels and the beam nearest look.
+
+    Returns weights (n_chan, n_ant), the beam index and direction, the frame of the update
+    used, its window size and the loading of the run.
+    """
+    import json
+
+    z = np.load(path)
+    beams = np.asarray(z["beams"], dtype=float).reshape(-1, 2)
+    b = int(np.argmin(np.hypot(beams[:, 0] - look[0], beams[:, 1] - look[1])))
+    if np.hypot(*(beams[b] - np.asarray(look))) > 1e-3:
+        raise SystemExit(f"no stage beam at the look direction {look}: beams {beams.tolist()}")
+    upd = np.asarray(z["update_frames"])
+    n_frames = int(z["power"].shape[1])
+    t = n_frames // 2 if frame is None else int(frame)
+    k = int(np.searchsorted(upd, t, side="right") - 1)
+    if k < 0:
+        raise SystemExit(f"no weight update at or before frame {t}")
+    chans = list(np.asarray(z["channels"]).astype(int))
+    missing = [ch for ch in channels if ch not in chans]
+    if missing:
+        raise SystemExit(f"channels {missing} not in {path}")
+    w = np.stack([z["weights"][k, chans.index(ch), b] for ch in channels])
+    params = json.loads(str(z["params"])) if "params" in z.files else {}
+    return {"weights": w, "beam": b, "beam_lm": beams[b], "frame": int(upd[k]),
+            "n_window": int(z["n_window"][upd[k]]) if "n_window" in z.files else -1,
+            "loading": float(params.get("loading", 10.0)),
+            "loading_ref": str(params.get("loading_ref", "noise"))}
 
 
 def cut_axis(look, target, n=2001):
@@ -102,6 +140,10 @@ def main() -> None:
     ap.add_argument("--vmin", type=float, default=-60.0, help="lower colour limit [dB]")
     ap.add_argument("--cut-zoom", type=float, default=None, metavar="W",
                     help="add an inset to the cut, +-W around the first interferer")
+    ap.add_argument("--stage-npz", type=Path, default=None,
+                    help="take the MVDR weights from a chartsMVDRBeams output npz")
+    ap.add_argument("--stage-frame", type=int, default=None,
+                    help="frame whose weights are used (default: middle of the window)")
     ap.add_argument("--out", type=Path, default=Path("beam_response"))
     args = ap.parse_args()
 
@@ -138,11 +180,24 @@ def main() -> None:
     print(f"look direction: l = {look[0]:+.4f}, m = {look[1]:+.4f}; grid spacing: "
           f"{'%.3f x %.3f m' % spacing if spacing else 'not a regular grid'}")
 
+    stage = None
+    if args.stage_npz is not None:
+        stage = load_stage_weights(args.stage_npz, look, args.channels, args.stage_frame)
+        args.loading = [stage["loading"]]
+        print(f"MVDR weights from {args.stage_npz}: beam {stage['beam']} "
+              f"({stage['beam_lm'][0]:+.4f}, {stage['beam_lm'][1]:+.4f}), update at frame "
+              f"{stage['frame']} (window of {stage['n_window']} frames), loading "
+              f"{stage['loading']:g} x {stage['loading_ref']}")
+        if stage["loading_ref"] != args.loading_ref:
+            args.loading_ref = stage["loading_ref"]
+
     gl, gm, mask = lm_grid(args.grid)
     args.out.mkdir(parents=True, exist_ok=True)
-    beams = ["DFT"] + [f"MVDR d={ld:g}" for ld in args.loading]
+    beams = ["DFT"] + [f"MVDR d={ld:g}" + (" stage" if stage is not None else "")
+                       for ld in args.loading]
     ref_tex = {"noise": r"\hat\sigma_n^2", "trace": r"\,\mathrm{tr}(F)/N", "absolute": ""}
-    titles = ["DFT"] + [rf"MVDR, $\delta = {ld:g}{ref_tex[args.loading_ref] if ld else ''}$"
+    titles = ["DFT"] + [rf"MVDR{' (Kotekan)' if stage is not None else ''}, "
+                        rf"$\delta = {ld:g}{ref_tex[args.loading_ref] if ld else ''}$"
                         for ld in args.loading]
     save = {"look": np.array(look), "channels": np.array(args.channels),
             "freq_mhz": freq_hz[args.channels] / 1e6, "loading": np.array(args.loading),
@@ -157,9 +212,12 @@ def main() -> None:
         d = steering_vectors(*look, f, x, y)
         ints = ints_fixed if ints_fixed is not None else rfi.get(ch, [])
         lobes = (grating_lobes(*look, f, *spacing) if spacing else [])
-        W = [dft_weights(d)[0]] + [
-            mvdr_weights(F[c], d, loading=ld, loading_ref=args.loading_ref)[0]
-            for ld in args.loading]
+        if stage is not None:
+            W = [dft_weights(d)[0], stage["weights"][c].astype(complex)]
+        else:
+            W = [dft_weights(d)[0]] + [
+                mvdr_weights(F[c], d, loading=ld, loading_ref=args.loading_ref)[0]
+                for ld in args.loading]
         sig_n = noise_floor(F[c])
         save[f"ch{ch}_noise_floor"] = sig_n
         print(f"\nch {ch} ({f / 1e6:.1f} MHz), noise floor of F {sig_n:.3f}; "

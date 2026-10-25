@@ -122,6 +122,7 @@ scripts/
   12_stage_reference.py         # reference of the Kotekan MVDR stage: beam power per frame/channel/beam, weights
   13_compare_kotekan_mvdr.py    # Kotekan chartsMVDRBeams output vs the reference on the same frames
   14_stage_transient_snr.py     # burst S/N in the stage beam power, paired windows (per channel, group, dedispersed)
+  15_stage_waterfall.py         # Figs. 1-2 analogue from stage outputs: z(t, f) and dedispersed S/N, paired windows
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -211,6 +212,13 @@ python scripts/12_stage_reference.py --corr-dir <corr_dir> --window-dir <window_
 # outputs in $SCRATCH/data/kotekan_mvdr/<label>_<jobid>/{corr,mvdr}, verdict in comparison.txt
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir>,BEAMS="<l1> <m1> ...",LABEL=<label> \
     jobs/mvdr_kotekan.sh
+
+# Figures from the Kotekan stage: beam response of the applied weights (07 --stage-npz, then
+# tools/fig_beam_response.py) and waterfalls of a paired FRB window (15)
+python scripts/07_beam_response.py --corr-dir <run>/corr --window-dir <window_dir> --channels <ch...> \
+    --look <l> <m> --stage-npz <run>/stage_output.npz --out <out_dir>
+python scripts/15_stage_waterfall.py --rfi <run_rfi>/stage_output.npz --clean <run_clean>/stage_output.npz \
+    --window-dir <window_dir> --out <out_dir>
 
 # Build Kotekan and correlate a window (GPU, from trig-login01)
 sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree> jobs/build_kotekan.sh

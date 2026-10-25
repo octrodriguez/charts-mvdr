@@ -46,7 +46,7 @@ from pathlib import Path
 import numpy as np
 
 from charts_mvdr.data_io import load_events_file, load_window_dir_meta
-from charts_mvdr.transients import arrival_times_s, burst_from_events, on_pulse_mask
+from charts_mvdr.transients import stage_frame_masks
 
 FRAME_S = 1536 * 10e-6 / 3
 
@@ -82,27 +82,6 @@ def channel_snr(P, on, off):
     return S, sig, n_on
 
 
-def masks(meta, events, n_frames, freqs_mhz, n_sigma, local_s, guard, frame_s=FRAME_S):
-    burst = burst_from_events(events)
-    t_of = dict(zip(np.asarray(meta["frame_out_idx"]).astype(int), meta["frame_time_s"]))
-    missing = [k for k in range(n_frames) if k not in t_of]
-    if missing:
-        raise SystemExit(f"{len(missing)} stage frames have no time in the metadata")
-    times = np.array([t_of[k] for k in range(n_frames)])
-    f_top = float(np.max(meta["frequencies_mhz"]))
-    on = on_pulse_mask(times, freqs_mhz, burst["dm"], burst["t_top_s"], burst["width_s"],
-                       n_sigma, frame_s, f_top)
-    t_arr = arrival_times_s(freqs_mhz, burst["dm"], burst["t_top_s"], f_top)
-    guard_m = on.copy()
-    for k in range(1, guard + 1):
-        guard_m[k:] |= on[:-k]
-        guard_m[:-k] |= on[k:]
-    off = (np.abs(times[:, None] + frame_s / 2 - t_arr[None, :]) <= local_s) & ~guard_m
-    frame0 = np.floor(burst["t_top_s"] / frame_s) * frame_s
-    truncated = t_arr - n_sigma * burst["width_s"] < frame0
-    return on, off, truncated, burst
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -127,8 +106,9 @@ def main(argv=None):
     meta = load_window_dir_meta(args.window_dir)
     events = load_events_file(args.window_dir)
     n_frames = zr["power"].shape[1]
-    on, off, trunc, burst = masks(meta, events, n_frames, freqs, args.n_sigma, args.local_s,
-                                  args.guard_frames)
+    _, on, off, trunc, _, burst = stage_frame_masks(meta, events, n_frames, freqs,
+                                                    args.n_sigma, args.local_s,
+                                                    args.guard_frames, FRAME_S)
     usable = ~trunc & (off.sum(0) >= args.min_off) & (on.sum(0) > 0)
     print(f"burst DM {burst['dm']:g}, sigma {burst['width_s'] * 1e3:g} ms; {usable.sum()} of "
           f"{chans.size} channels usable ({trunc.sum()} with truncated leading tail)")

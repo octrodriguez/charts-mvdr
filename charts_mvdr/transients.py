@@ -58,3 +58,36 @@ def burst_from_events(events, event_id=None) -> dict:
                     "t_top_s": float(ev["t_start_s"]), "l": float(ev["l0"]),
                     "m": float(ev["m0"])}
     raise ValueError("no frb event" + (f" with id {event_id!r}" if event_id else ""))
+
+
+def stage_frame_masks(meta: dict, events: list, n_frames: int, freqs_mhz, n_sigma: float = 3.0,
+                      local_s: float = 0.05, guard_frames: int = 1,
+                      frame_s: float = 1536 * 10e-6 / 3):
+    """On-pulse and off-local frame masks of a stream of frames (stage outputs).
+
+    Frame k of the stream is window frame k (frame_out_idx k in meta). Returns
+    (times (n_frames,), on (n_frames, n_chan), off (n_frames, n_chan), truncated (n_chan,),
+    t_arr (n_chan,), burst). on follows the dispersion delay (on_pulse_mask); off holds the
+    frames within local_s of the arrival in each channel, outside the on frames and
+    guard_frames on each side; truncated flags channels whose leading tail precedes the
+    first frame of the burst (cut by the simulator).
+    """
+    burst = burst_from_events(events)
+    t_of = dict(zip(np.asarray(meta["frame_out_idx"]).astype(int), meta["frame_time_s"]))
+    missing = [k for k in range(n_frames) if k not in t_of]
+    if missing:
+        raise ValueError(f"{len(missing)} frames have no time in the metadata")
+    times = np.array([t_of[k] for k in range(n_frames)])
+    freqs_mhz = np.asarray(freqs_mhz, dtype=float)
+    f_top = float(np.max(meta["frequencies_mhz"]))
+    on = on_pulse_mask(times, freqs_mhz, burst["dm"], burst["t_top_s"], burst["width_s"],
+                       n_sigma, frame_s, f_top)
+    t_arr = arrival_times_s(freqs_mhz, burst["dm"], burst["t_top_s"], f_top)
+    guard_m = on.copy()
+    for k in range(1, guard_frames + 1):
+        guard_m[k:] |= on[:-k]
+        guard_m[:-k] |= on[k:]
+    off = (np.abs(times[:, None] + frame_s / 2 - t_arr[None, :]) <= local_s) & ~guard_m
+    frame0 = np.floor(burst["t_top_s"] / frame_s) * frame_s
+    truncated = t_arr - n_sigma * burst["width_s"] < frame0
+    return times, on, off, truncated, t_arr, burst

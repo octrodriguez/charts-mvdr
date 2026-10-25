@@ -63,3 +63,21 @@ def test_paired_snr(tmp_path):
     assert abs(dz[0]) < 1e-5 and abs(dz[2]) < 1e-5
     # z-score down-weights the RFI channels: a smaller dedispersed loss than equal weight
     assert ded[1] < dz[1] < 0
+
+
+def test_waterfall(tmp_path):
+    win = _window(tmp_path, n_frames=120, n_chan=6, rfi_chans=(1, 2))
+    out = tmp_path / "fig"
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "15_stage_waterfall.py"),
+                        "--rfi", str(tmp_path / "rfi.npz"), "--clean",
+                        str(tmp_path / "clean.npz"), "--window-dir", str(win),
+                        "--out", str(out)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert (out / "stage_waterfall.png").stat().st_size > 10_000
+    z = np.load(out / "stage_waterfall.npz")
+    clean, dft, mvdr = z["peaks"]
+    # MVDR plane equals the clean one in the synthetic pair; RFI lowers the DFT peak
+    assert abs(mvdr - clean) < 1e-6 and dft < clean
+    # the peak sits at zero dedispersed time (DM 0, burst in frame 60)
+    tau = z["tau_0"]
+    assert abs(tau[np.nanargmax(z["snr_0"])]) <= 1536 * 10e-6 / 3

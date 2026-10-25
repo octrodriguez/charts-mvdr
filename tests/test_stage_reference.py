@@ -299,3 +299,41 @@ def test_default_window():
     c = StageConfig(beams=[(0, 0)], positions_x_m=np.zeros(2), positions_y_m=np.zeros(2),
                     samples_per_frame=1)
     assert (c.half_window, c.guard, c.min_frames, c.update_every) == (40, 1, 39, 1)
+
+
+def test_beam_response_from_stage_weights(tmp_path):
+    """07 --stage-npz maps the weights the stage applied (update in force at the frame)."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from charts_mvdr.beamforming import beam_response
+
+    run, win, ref, n = _fake_kotekan_run(tmp_path)
+    root = Path(__file__).resolve().parents[1]
+    st = tmp_path / "st.npz"
+    r = subprocess.run([sys.executable, str(root / "scripts" / "13_compare_kotekan_mvdr.py"),
+                        "--run-dir", str(run), "--window-dir", str(win), "--num-freq", "3",
+                        "--num-ant", str(n), "--half-window", "3", "--beams", "-0.1", "0.25",
+                        "0.5", "0.2", "--out", str(st)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = tmp_path / "br"
+    r = subprocess.run([sys.executable, str(root / "scripts" / "07_beam_response.py"),
+                        "--corr-dir", str(run / "corr"), "--window-dir", str(win),
+                        "--channels", "1", "--look", "-0.1", "0.25", "--stage-npz", str(st),
+                        "--stage-frame", "5", "--grid", "41", "--interferer", "0.5", "0.2",
+                        "--out", str(out)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    z = np.load(out / "beam_response.npz")
+    assert [str(b) for b in z["beams"]] == ["DFT", "MVDR d=10 stage"]
+    k = max(i for i, t in enumerate(ref.update_frames) if t <= 5)
+    w = ref.weights[k][1, 0]
+    x, y = _fake_positions()
+    expect = 10 * np.log10(beam_response(w, 0.5, 0.2, F0, x, y)[0])
+    np.testing.assert_allclose(z["ch1_MVDR_d10_stage_int_db"][0], expect, atol=1e-3)
+    np.testing.assert_allclose(z["ch1_MVDR_d10_stage_wng_db"],
+                               10 * np.log10(n * np.sum(np.abs(w) ** 2)), atol=1e-4)
+
+
+def _fake_positions():
+    return grid()
