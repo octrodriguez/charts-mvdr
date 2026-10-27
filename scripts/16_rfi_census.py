@@ -15,9 +15,12 @@ census   From that cube: per antenna, spectral peaks over a running median
          (charts_mvdr.rfi_census), occupancy over time, classes
          persistent / intermittent / variable / clean, where "variable" comes
          from charts_utils.cal.algorithms.mad_rfi_zapper applied to the
-         autocorrelations normalized per channel. With --fringe (npz of
+         autocorrelations normalized per channel. Each frame is normalized per
+         frequency block (--blocks, 2 GPU blocks of 336 channels), so heavy
+         packet loss in one block invalidates the frame. With --fringe (npz of
          11_fringe_coherence.py) the array class of each channel is crossed with
-         the fringe class (majority over pairs). Outputs rfi_census.npz and
+         the fringe class (majority over pairs; ties are ambiguous). Outputs
+         rfi_census.npz (classes, occupancy, per-frame flags with times) and
          rfi_census.png in --out.
 
 Usage:
@@ -108,21 +111,24 @@ def variability_mask(auto_norm, valid, sigma):
     return mask
 
 
-def census(vis, freqs, ants, window, k, persistent, intermittent, var_sigma=None):
+def census(vis, freqs, ants, window, k, persistent, intermittent, var_sigma=None, n_blocks=1):
     """Per-antenna census. Returns dict with occ, cls (M, F), valid (M, T), median spectra."""
     m = len(ants)
     occ = np.full((m, len(freqs)), np.nan)
     cls = np.zeros((m, len(freqs)), dtype=int)
     valid = np.zeros((m, vis.shape[-1]), dtype=bool)
     spec = np.full((m, len(freqs)), np.nan)
+    flags_all = np.zeros((m, len(freqs), vis.shape[-1]), dtype=bool)
     for i in range(m):
-        a_norm, valid[i] = rc.normalize_frames(vis[i, i].real)
+        a_norm, valid[i] = rc.normalize_frames(vis[i, i].real, n_blocks=n_blocks)
         _, flags = rc.spectral_peaks(a_norm, window=window, k=k)
+        flags_all[i] = flags & valid[i][None, :]
         occ[i] = rc.occupancy(flags, valid[i])
         var = variability_mask(a_norm, valid[i], var_sigma) if var_sigma is not None else None
         cls[i] = rc.classify(occ[i], var, persistent=persistent, intermittent=intermittent)
         spec[i] = np.nanmedian(a_norm[:, valid[i]], axis=1)
-    return {"occ": occ, "cls": cls, "valid": valid, "spec": spec, "array_cls": rc.array_class(cls)}
+    return {"occ": occ, "cls": cls, "valid": valid, "spec": spec, "flags": flags_all,
+            "array_cls": rc.array_class(cls)}
 
 
 def plot(path, freqs, ants, res, fringe_major=None):
@@ -178,7 +184,7 @@ def cmd_census(args) -> int:
     z = np.load(args.vis)
     vis, freqs, ants = z["vis"], z["freqs"], [int(a) for a in z["ants"]]
     res = census(vis, freqs, ants, args.window, args.k, args.persistent, args.intermittent,
-                 None if args.no_variability else args.var_sigma)
+                 None if args.no_variability else args.var_sigma, n_blocks=args.blocks)
     print(f"{vis.shape[-1]} frames; valid per antenna: "
           + ", ".join(f"{a}: {int(v.sum())}" for a, v in zip(ants, res["valid"])))
     print("band fraction per antenna (persistent / intermittent / variable):")
@@ -200,7 +206,8 @@ def cmd_census(args) -> int:
             print(f"{c:>14}" + "".join(f"{v:>12d}" for v in table[i]))
 
     os.makedirs(args.out, exist_ok=True)
-    np.savez(os.path.join(args.out, "rfi_census.npz"), freqs=freqs, ants=np.array(ants),
+    np.savez_compressed(os.path.join(args.out, "rfi_census.npz"), freqs=freqs, ants=np.array(ants),
+             times=z["times"], flags=res["flags"],
              classes=np.array(rc.CLASSES), occ=res["occ"], cls=res["cls"], valid=res["valid"],
              spec=res["spec"], array_cls=res["array_cls"],
              fringe_major=fringe_major if fringe_major is not None else np.array([]),
@@ -232,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--intermittent", type=float, default=0.05, help="Occupancy for intermittent.")
     c.add_argument("--var-sigma", type=float, default=3.0, help="threshold_sigma of mad_rfi_zapper.")
     c.add_argument("--no-variability", action="store_true", help="Skip the mad_rfi_zapper criterion.")
+    c.add_argument("--blocks", type=int, default=2,
+                   help="Frequency blocks normalized separately per frame (GPU frame blocks).")
     c.add_argument("--out", required=True, help="Output directory.")
     return p
 

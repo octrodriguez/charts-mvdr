@@ -39,23 +39,35 @@ def robust_sigma(x, axis=None):
     return 1.4826 * np.nanmedian(np.abs(x - med), axis=axis)
 
 
-def normalize_frames(auto, min_level: float = 0.5):
+def normalize_frames(auto, min_level: float = 0.5, n_blocks: int = 1):
     """Divide each frame by its median over frequency and mark invalid frames.
 
-    auto: (n_freq, n_time) real autocorrelations. A frame is invalid when it is
-    empty or its band median is below `min_level` times the median over frames
-    (heavy packet loss). Returns (normalized auto with NaN in invalid frames,
-    valid mask (n_time,)).
+    auto: (n_freq, n_time) real autocorrelations. With n_blocks > 1 the band is
+    split into that many equal frequency blocks (GPU frame blocks, one per packet
+    stream), each normalized by its own median: packet loss zeroes samples per
+    block, and heavy loss in one block is missed by a single band median.
+    A frame is invalid when any block is empty or below `min_level` times its
+    median over frames (heavy packet loss). Returns (normalized auto with NaN in
+    invalid frames, valid mask (n_time,)).
     """
     a = np.asarray(auto, dtype=float)
     if a.ndim != 2:
         raise ValueError(f"auto must have shape (n_freq, n_time); got {a.shape}")
+    if n_blocks < 1 or a.shape[0] % n_blocks:
+        raise ValueError(f"{a.shape[0]} channels cannot be split into {n_blocks} blocks")
     a = np.where(a > 0, a, np.nan)
-    level = np.nanmedian(a, axis=0) if a.size else np.array([])
-    ref = np.nanmedian(level)
-    valid = np.isfinite(level) & (level >= min_level * ref)
     out = np.full_like(a, np.nan)
-    out[:, valid] = a[:, valid] / level[valid]
+    valid = np.ones(a.shape[1], dtype=bool)
+    edges = np.linspace(0, a.shape[0], n_blocks + 1).astype(int)
+    levels = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)          # empty frames
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            level = np.nanmedian(a[lo:hi], axis=0)
+            valid &= np.isfinite(level) & (level >= min_level * np.nanmedian(level))
+            levels.append((lo, hi, level))
+    for lo, hi, level in levels:
+        out[lo:hi, valid] = a[lo:hi, valid] / level[valid]
     return out, valid
 
 
@@ -115,13 +127,17 @@ def array_class(cls):
     return srt[(n + 1) // 2 - 1]
 
 
-def fringe_majority(labels):
-    """Most common fringe label over antenna pairs: labels (n_pair, n_freq) of str."""
+def fringe_majority(labels, tie: str = "ambiguous"):
+    """Most common fringe label over antenna pairs: labels (n_pair, n_freq) of str.
+
+    A tie between the most common labels gives `tie` (no alphabetical preference).
+    """
     labels = np.asarray(labels)
-    out = np.empty(labels.shape[1], dtype=labels.dtype)
+    out = np.empty(labels.shape[1], dtype=f"<U{max(labels.dtype.itemsize // 4, len(tie))}")
     for f in range(labels.shape[1]):
         vals, counts = np.unique(labels[:, f], return_counts=True)
-        out[f] = vals[np.argmax(counts)]
+        top = np.flatnonzero(counts == counts.max())
+        out[f] = vals[top[0]] if top.size == 1 else tie
     return out
 
 

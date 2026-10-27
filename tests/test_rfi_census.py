@@ -40,6 +40,20 @@ def test_normalize_frames_marks_packet_loss():
     assert abs(np.nanmedian(a[:, 20]) - 1.0) < 1e-6
 
 
+def test_per_block_normalization_detects_loss_in_one_block():
+    rng = np.random.default_rng(2)
+    auto = 1 + 0.01 * rng.standard_normal((F, T))
+    auto[F // 2:] *= 1 - 0.1 * rng.random(T)       # mild time-variable loss in the upper block
+    auto[F // 2:, 7] *= 0.3                         # heavy loss in the upper block of frame 7
+    _, valid1 = rc.normalize_frames(auto, n_blocks=1)
+    a2, valid2 = rc.normalize_frames(auto, n_blocks=2)
+    assert valid1[7] and not valid2[7] and valid2.sum() == T - 1
+    med = np.nanmedian(a2[F // 2:, valid2], axis=0)
+    assert np.allclose(med, 1.0)                    # each block normalized to its own median
+    with pytest.raises(ValueError):
+        rc.normalize_frames(auto[:-1], n_blocks=2)
+
+
 def test_running_median_matches_direct():
     x = np.random.default_rng(1).standard_normal((50, 7))
     rm = rc.running_median(x, 5)
@@ -70,6 +84,8 @@ def test_array_class_and_cross_counts():
                        ["none", "source", "stationary", "source"]])
     maj = rc.fringe_majority(labels)
     assert maj.tolist() == ["source", "none", "stationary", "source"]
+    tie = np.array([["source", "stationary"], ["stationary", "stationary"]])
+    assert rc.fringe_majority(tie).tolist() == ["ambiguous", "stationary"]
     t = rc.cross_counts(rc.array_class(cls), maj, ["source", "stationary", "none"])
     assert t.sum() == 4 and t[3, 0] == 1 and t[2, 1] == 1 and t[0, 2] == 1 and t[1, 0] == 1
 
@@ -124,6 +140,8 @@ def test_census_end_to_end(tmp_path):
     assert t.sum() == F
     assert z["array_cls"][INTERMITTENT] == 2
     assert "valid per antenna: 0: 199" in stdout
+    assert z["flags"].shape == (3, F, T) and not z["flags"][:, :, 10].any()
+    assert z["flags"][0, PERSISTENT].mean() > 0.9 and z["times"].shape == (T,)
 
 
 def test_census_with_mad_rfi_zapper(tmp_path):
