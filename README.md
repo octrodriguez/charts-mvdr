@@ -145,6 +145,7 @@ tools/
   apply_test_gains.py           # known quarter-turn gains on a window + charts-utils gains file
   compare_tracker_beams.py      # complex scale and residual between two tracker runs
   fig_beam_response.py          # composite beam-response figure (maps; null depth and WNG vs distance to a grating lobe, ideal model)
+  fig_real_nulling.py           # real-data nulling figure: MVDR/DFT ratio and WNG per channel, several runs overlaid
 legacy/                         # early exploratory scripts, kept for reference
 ```
 
@@ -213,7 +214,12 @@ python scripts/16_rfi_census.py census --vis <vis.npz> --fringe <fringe_coherenc
 
 # Nulling test on real covariances (stage rules, look direction tracked frame by frame)
 python scripts/17_real_nulling.py --vis <vis.npz> --gains <gains.npy> --gain-antennas <a,b,c> \
-    --positions <positions.npy> --look sun --interp-gains --rfi <MHz ranges> --clean <MHz ranges> --out <out_dir>
+    --positions <positions.npy> --look sun --interp-gains --rfi <MHz ranges> --clean <MHz ranges> --out <out_dir> \
+    [--sign -1 --loading-ref min --loading 0.1]
+# Real frames read with charts-utils need --sign -1 (measured on corr_1027). With few antennas use
+# --loading-ref min: interference lifts the median eigenvalue and MVDR collapses to DFT.
+python tools/fig_real_nulling.py "<label>=<run_a>/real_nulling.npz" "<label>=<run_b>/real_nulling.npz" \
+    --rfi <MHz ranges> --clean <MHz ranges> --out <figure.png>
 
 # Reference of the Kotekan MVDR stage on a correlated window: covariance from frames
 # guard < |k - t| <= half-window around each frame, DFT and MVDR (loading 10 x noise floor)

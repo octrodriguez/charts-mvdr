@@ -128,3 +128,39 @@ def test_script_end_to_end(tmp_path):
     bad = subprocess.run([sys.executable, str(SCRIPT), "--vis", str(tmp_path / "vis.npz"), "--gains", str(tmp_path / "gains.npy"),
                           "--positions", str(tmp_path / "pos.npy"), "--out", str(tmp_path / "x")], capture_output=True, text=True)
     assert bad.returncode == 1 and "--gain-antennas" in bad.stderr
+
+
+def test_loading_ref_min_restores_nulling():
+    """With N = 4 and two strong interferers the median eigenvalue is not noise:
+    loading relative to it collapses MVDR to DFT, loading relative to the minimum does not."""
+    freqs, gains, look, _ = setup()
+    rng = np.random.default_rng(7)
+    vis = synthetic(freqs, rfi_chans={4, 5}, look_lm=look, gains=gains, p_rfi=1000.0)
+    extra = synthetic(freqs, rfi_chans={4, 5}, look_lm=look, gains=gains, seed=9, p_src=0.0,
+                      p_rfi=1000.0, rfi_lm=(-0.6, 0.0)) - synthetic(freqs, rfi_chans=set(), look_lm=look,
+                                                                     gains=gains, seed=9, p_src=0.0)
+    vis = vis + extra                                  # second interferer, noise counted once
+    kw = dict(gains=gains, half_window=10, guard=1, loading=10.0)
+    med = tracking.run_tracking(vis, freqs * 1e6, X, Y, look, loading_ref="median", **kw)
+    mn = tracking.run_tracking(vis, freqs * 1e6, X, Y, look, loading_ref="min", **kw)
+    r_med = np.nanmedian(10 * np.log10(med["power"][1] / med["power"][0]), axis=0)
+    r_min = np.nanmedian(10 * np.log10(mn["power"][1] / mn["power"][0]), axis=0)
+    assert np.all(r_min[4:] < r_med[4:] - 3)           # deeper rejection with min reference
+    assert np.all(np.abs(r_min[:4]) < 0.5)             # look source still kept
+    with pytest.raises(ValueError):
+        tracking.batched_mvdr(np.eye(4)[None], np.ones((1, 4)), 1.0, loading_ref="trace")
+
+
+def test_fig_real_nulling(tmp_path):
+    tool = Path(__file__).resolve().parents[1] / "tools" / "fig_real_nulling.py"
+    f = np.linspace(360, 430, 50)
+    for name, depth in (("a", -1.0), ("b", -6.0)):
+        np.savez(tmp_path / f"{name}.npz", freqs=f, ratio_db=np.where(f > 415, depth, 0.0),
+                 wng_db=np.zeros(50), interp=f > 415)
+    r = subprocess.run([sys.executable, str(tool), f"median={tmp_path / 'a.npz'}",
+                        f"min={tmp_path / 'b.npz'}", "--rfi", "415-430", "--clean", "380-400",
+                        "--out", str(tmp_path / "fig.png")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "fig.png").exists()
+    lines = [ln for ln in r.stdout.splitlines() if "415-430 MHz" in ln]
+    assert len(lines) == 2 and "-1.0 dB" in lines[0] and "-6.0 dB" in lines[1]

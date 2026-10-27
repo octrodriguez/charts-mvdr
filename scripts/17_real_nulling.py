@@ -8,7 +8,10 @@ n_frames), times, freqs, ants), complex gains from cal_pipeline_gpu.py
 positions (ENU metres, logical order). For each frame it forms DFT and MVDR
 beams towards a look direction (the Sun tracked frame by frame, zenith, or a
 fixed l,m) with the rules of the Kotekan stage (charts_mvdr.tracking.run_tracking:
-blind local window, loading 10 x median eigenvalue, gains G^-1 R G^-H).
+blind local window, loading 10 x median eigenvalue by default, gains G^-1 R G^-H).
+With few antennas the median eigenvalue is lifted by interference and the
+weights collapse to DFT; --loading-ref min refers the loading to the smallest
+eigenvalue instead.
 
 Per channel it reports the median over frames of the MVDR/DFT power ratio and the
 WNG. In channels with interference outside the look direction the ratio is the
@@ -116,10 +119,13 @@ def build_parser():
     p.add_argument("--interp-gains", action="store_true", help="Interpolate gains over unsolved channels.")
     p.add_argument("--positions", required=True, help="Positions .npy (n, 3), ENU metres, logical order.")
     p.add_argument("--look", default="sun", help="'sun', 'zenith' or 'l,m'.")
-    p.add_argument("--sign", default="auto", choices=["auto", "1", "-1"], help="Steering phase convention.")
+    p.add_argument("--sign", default="auto", choices=["auto", "1", "-1"],
+                   help="Steering phase convention; -1 for frames read with charts-utils (measured on corr_1027).")
     p.add_argument("--half-window", type=int, default=10)
     p.add_argument("--guard", type=int, default=1)
-    p.add_argument("--loading", type=float, default=10.0, help="Loading in units of the median eigenvalue.")
+    p.add_argument("--loading", type=float, default=10.0, help="Loading in units of the reference eigenvalue.")
+    p.add_argument("--loading-ref", default="median", choices=list(tracking.LOADING_REFS),
+                   help="Reference eigenvalue of the loading: median (stage rule) or min (small arrays).")
     p.add_argument("--rfi", nargs="*", default=[], help="MHz ranges with interference (summary).")
     p.add_argument("--clean", nargs="*", default=[], help="MHz ranges dominated by the look source (summary, sign).")
     p.add_argument("--out", required=True)
@@ -181,7 +187,8 @@ def main(argv=None) -> int:
         sign = int(args.sign)
 
     res = tracking.run_tracking(vis, freqs_hz, x, y, look, gains=gains, half_window=args.half_window,
-                                guard=args.guard, loading=args.loading, sign=sign)
+                                guard=args.guard, loading=args.loading, sign=sign,
+                                loading_ref=args.loading_ref)
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio_db = np.nanmedian(10 * np.log10(res["power"][1] / res["power"][0]), axis=0)
         wng_db = np.nanmedian(10 * np.log10(res["wng"]), axis=0)
@@ -201,9 +208,11 @@ def main(argv=None) -> int:
     np.savez_compressed(os.path.join(args.out, "real_nulling.npz"), freqs=freqs, times=times,
                         ants=np.array(ants), look=look, sign=sign, power=res["power"], wng=res["wng"],
                         ratio_db=ratio_db, wng_db=wng_db, interp=interp_any,
-                        params=np.array([args.half_window, args.guard, args.loading]))
+                        params=np.array([args.half_window, args.guard, args.loading]),
+                        loading_ref=args.loading_ref)
     plot(os.path.join(args.out, "real_nulling.png"), freqs, ratio_db, wng_db, interp_any, rfi, clean,
-         f"antennas {ants}, look {args.look}, H = {args.half_window}, loading {args.loading:g} x median eig")
+         f"antennas {ants}, look {args.look}, H = {args.half_window}, "
+         f"loading {args.loading:g} x {args.loading_ref} eig")
     print(f"saved {args.out}/real_nulling.npz and real_nulling.png")
     return 0
 

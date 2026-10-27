@@ -2,7 +2,7 @@
 
 `run_tracking` applies the rules of the Kotekan stage (stage_reference.run_stage:
 blind local window guard < |k - t| <= half_window, loading relative to the median
-eigenvalue, gains corrected as G^-1 R G^-H) to a cube of measured covariances,
+eigenvalue or, for small arrays, to the smallest one; gains corrected as G^-1 R G^-H) to a cube of measured covariances,
 with one look direction per frame (a source that moves across the sky, such as
 the Sun). For each frame and channel it returns the DFT and MVDR beam power and
 the white-noise gain WNG = N ||w||^2 of the MVDR weights (0 dB for DFT).
@@ -52,15 +52,25 @@ def interpolate_gains(g, freqs):
     return out, filled
 
 
-def batched_mvdr(F, a, loading: float):
+LOADING_REFS = ("median", "min")
+
+
+def batched_mvdr(F, a, loading: float, loading_ref: str = "median"):
     """MVDR weights for many channels: F (n_chan, n, n), a (n_chan, n).
 
-    delta = loading x median eigenvalue of F per channel (loading_ref "noise").
+    delta = loading x reference eigenvalue of F per channel:
+      "median"  median eigenvalue, the noise floor when the sources are few
+                compared with n / 2 (rule of the Kotekan stage, loading_ref "noise");
+      "min"     smallest eigenvalue, for small arrays where interference lifts
+                the median (with n = 4, two or more strong components already do).
     Returns w (n_chan, n) with w^H a = 1.
     """
+    if loading_ref not in LOADING_REFS:
+        raise ValueError(f"loading_ref must be one of {LOADING_REFS}, got {loading_ref!r}")
     n = F.shape[-1]
     ev = np.linalg.eigvalsh(F)
-    delta = loading * np.median(ev, axis=-1)
+    ref = np.median(ev, axis=-1) if loading_ref == "median" else ev[..., 0]
+    delta = loading * ref
     Rl = F + delta[:, None, None] * np.eye(n)[None]
     X = np.linalg.solve(Rl, a[..., None])[..., 0]
     denom = np.einsum("ci,ci->c", a.conj(), X)
@@ -68,14 +78,17 @@ def batched_mvdr(F, a, loading: float):
 
 
 def run_tracking(vis, freqs_hz, pos_x, pos_y, look_lm, gains=None, half_window: int = 10,
-                 guard: int = 1, loading: float = 10.0, min_frames=None, sign: int = 1):
+                 guard: int = 1, loading: float = 10.0, min_frames=None, sign: int = 1,
+                 loading_ref: str = "median"):
     """DFT and MVDR beam power with one look direction per frame.
 
     vis: (n_ant, n_ant, n_chan, n_frames) covariances (V_ab = x_a x_b^*, as
     charts-utils readers); look_lm: (n_frames, 2) direction cosines (east,
     north); gains: (n_chan, n_ant) or None; channels with a non-finite gain in
     any antenna are skipped (NaN). sign = -1 uses conjugated steering vectors
-    (the other phase convention). Returns dict with power (2, n_frames, n_chan)
+    (the other phase convention; the one measured on real CHARTS data read with
+    charts-utils, corr_1027). loading_ref: see batched_mvdr.
+    Returns dict with power (2, n_frames, n_chan)
     [dft, mvdr], wng (n_frames, n_chan) in linear units, n_window (n_frames,).
     """
     vis = np.asarray(vis)
@@ -111,7 +124,7 @@ def run_tracking(vis, freqs_hz, pos_x, pos_y, look_lm, gains=None, half_window: 
         if k.size < min_frames:
             continue
         F = R[k][:, chans].mean(axis=0)
-        w = batched_mvdr(F, A, loading)
+        w = batched_mvdr(F, A, loading, loading_ref)
         power[1, t, chans] = np.real(np.einsum("ci,cij,cj->c", w.conj(), Rt, w))
         wng[t, chans] = n_ant * np.sum(np.abs(w) ** 2, axis=1)
     return {"power": power, "wng": wng, "n_window": n_window}
