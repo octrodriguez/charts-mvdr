@@ -105,6 +105,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   transients.py                 # dispersion delays, arrival times, on-pulse masks
   fringes.py                    # coherence with a geometric fringe model: baseline fit, channel classification
   rfi_census.py                 # RFI census of autocorrelations: spectral peaks, occupancy, classes, fringe crossing
+  tracking.py                   # stage rules with a moving look direction on real covariances; gain interpolation, sidecar
   stage_reference.py            # NumPy reference of the Kotekan MVDR stage (blind local covariance window, gains)
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
@@ -125,6 +126,7 @@ scripts/
   14_stage_transient_snr.py     # burst S/N in the stage beam power, paired windows (per channel, group, dedispersed)
   15_stage_waterfall.py         # Figs. 1-2 analogue from stage outputs: z(t, f) and dedispersed S/N, paired windows
   16_rfi_census.py              # real frames: reduced cube (extract) and RFI census crossed with fringe classes (census)
+  17_real_nulling.py            # real covariances: DFT vs MVDR towards a tracked look direction, rejection and WNG per channel
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -208,6 +210,10 @@ python scripts/11_fringe_coherence.py --input <frame_dir> --antennas <a,b,c> --p
 # then the census anywhere; classes persistent / intermittent / variable crossed with the fringe classes
 python scripts/16_rfi_census.py extract --input <frame_dir> --antennas <a,b,c> --stride 4 --out <vis.npz>
 python scripts/16_rfi_census.py census --vis <vis.npz> --fringe <fringe_coherence.npz> --out <out_dir>
+
+# Nulling test on real covariances (stage rules, look direction tracked frame by frame)
+python scripts/17_real_nulling.py --vis <vis.npz> --gains <gains.npy> --gain-antennas <a,b,c> \
+    --positions <positions.npy> --look sun --interp-gains --rfi <MHz ranges> --clean <MHz ranges> --out <out_dir>
 
 # Reference of the Kotekan MVDR stage on a correlated window: covariance from frames
 # guard < |k - t| <= half-window around each frame, DFT and MVDR (loading 10 x noise floor)
