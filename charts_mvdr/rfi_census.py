@@ -32,6 +32,31 @@ import numpy as np
 CLASSES = ("clean", "variable", "intermittent", "persistent")   # increasing severity
 
 
+def split_fengine_coeffs(coeffs, n_chan: int = 672):
+    """Per-chain digital gains from a flat F-engine coefficient array.
+
+    The coefficient file of the requantizer (e.g. final_coeffs_adc0.npy, int64,
+    8 chains x 1024 FFT bins) holds, for each chain, one contiguous run of
+    `n_chan` non-zero coefficients (the band, channel k at 300 + 0.3 k MHz, in
+    increasing frequency) at a chain-dependent offset, and zeros elsewhere. The
+    runs are found as maximal non-zero segments and returned in file order,
+    shape (n_chains, n_chan), float. Raises ValueError if any segment does not
+    have exactly `n_chan` coefficients (a zero inside the band, or another
+    layout).
+    """
+    c = np.asarray(coeffs).ravel()
+    nz = np.flatnonzero(c)
+    if nz.size == 0:
+        raise ValueError("no non-zero coefficients")
+    br = np.flatnonzero(np.diff(nz) > 1)
+    starts = np.r_[nz[0], nz[br + 1]]
+    ends = np.r_[nz[br], nz[-1]] + 1
+    lengths = ends - starts
+    if np.any(lengths != n_chan):
+        raise ValueError(f"expected runs of {n_chan} non-zero coefficients; got lengths {lengths.tolist()}")
+    return np.stack([c[s:e] for s, e in zip(starts, ends)]).astype(float)
+
+
 def robust_sigma(x, axis=None):
     """1.4826 x median absolute deviation, ignoring NaN."""
     x = np.asarray(x, dtype=float)

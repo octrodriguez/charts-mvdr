@@ -21,13 +21,16 @@ census   From that cube: per antenna, spectral peaks over a running median
          11_fringe_coherence.py) the array class of each channel is crossed with
          the fringe class (majority over pairs; ties are ambiguous). Outputs
          rfi_census.npz (classes, occupancy, per-frame flags with times) and
-         rfi_census.png in --out.
+         rfi_census.png in --out. With --gains (F-engine coefficient file) and
+         --gains-map, the autocorrelations of the mapped antennas are divided
+         by g^2: the census then runs on the input power of the requantizer,
+         i.e. the RFI environment, instead of the flattened calibrated output.
 
 Usage:
     python 16_rfi_census.py extract --input <frame_dir> --antennas 0,4,5,6 \\
         --stride 4 --out <vis.npz>
     python 16_rfi_census.py census --vis <vis.npz> --fringe <fringe_coherence.npz> \\
-        --out <out_dir>
+        --out <out_dir> [--gains <coeffs.npy> --gains-map 0:0,5:5]
 """
 from __future__ import annotations
 
@@ -111,8 +114,13 @@ def variability_mask(auto_norm, valid, sigma):
     return mask
 
 
-def census(vis, freqs, ants, window, k, persistent, intermittent, var_sigma=None, n_blocks=1):
-    """Per-antenna census. Returns dict with occ, cls (M, F), valid (M, T), median spectra."""
+def census(vis, freqs, ants, window, k, persistent, intermittent, var_sigma=None, n_blocks=1,
+           gains=None):
+    """Per-antenna census. Returns dict with occ, cls (M, F), valid (M, T), median spectra.
+
+    gains: optional (M, F) digital gains of each antenna's chain; the autocorrelations
+    are divided by g^2 (input power of the requantizer) before the census.
+    """
     m = len(ants)
     occ = np.full((m, len(freqs)), np.nan)
     cls = np.zeros((m, len(freqs)), dtype=int)
@@ -120,7 +128,11 @@ def census(vis, freqs, ants, window, k, persistent, intermittent, var_sigma=None
     spec = np.full((m, len(freqs)), np.nan)
     flags_all = np.zeros((m, len(freqs), vis.shape[-1]), dtype=bool)
     for i in range(m):
-        a_norm, valid[i] = rc.normalize_frames(vis[i, i].real, n_blocks=n_blocks)
+        auto = vis[i, i].real
+        if gains is not None:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                auto = auto / gains[i][:, None] ** 2
+        a_norm, valid[i] = rc.normalize_frames(auto, n_blocks=n_blocks)
         _, flags = rc.spectral_peaks(a_norm, window=window, k=k)
         flags_all[i] = flags & valid[i][None, :]
         occ[i] = rc.occupancy(flags, valid[i])
@@ -131,7 +143,7 @@ def census(vis, freqs, ants, window, k, persistent, intermittent, var_sigma=None
             "array_cls": rc.array_class(cls)}
 
 
-def plot(path, freqs, ants, res, fringe_major=None):
+def plot(path, freqs, ants, res, fringe_major=None, ylabel="[dB]"):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -149,7 +161,7 @@ def plot(path, freqs, ants, res, fringe_major=None):
             ax.scatter(freqs[sel], 10 * np.log10(res["spec"][i][sel]), s=6,
                        color=CLASS_COLORS[name], label=name if i == 0 else None, zorder=3)
         lost = np.mean(res["cls"][i] >= 2)
-        ax.set_ylabel(f"ant {ants[i]}\n[dB]")
+        ax.set_ylabel(f"ant {ants[i]}\n{ylabel}")
         ax.set_title(f"antenna {ants[i]}: band fraction with peaks (persistent + intermittent) "
                      f"{lost:.1%}, persistent {np.mean(res['cls'][i] == 3):.1%}",
                      fontsize=8, loc="left")
@@ -180,11 +192,38 @@ def plot(path, freqs, ants, res, fringe_major=None):
     plt.close(fig)
 
 
+def parse_gains_map(text):
+    """'0:0,5:5' -> {antenna: chain}."""
+    out = {}
+    for item in text.split(","):
+        a, c = (int(x) for x in item.split(":"))
+        out[a] = c
+    return out
+
+
 def cmd_census(args) -> int:
     z = np.load(args.vis)
     vis, freqs, ants = z["vis"], z["freqs"], [int(a) for a in z["ants"]]
+    gains, chains = None, None
+    if args.gains:
+        if not args.gains_map:
+            print("error: --gains needs --gains-map (antenna:chain,...)", file=sys.stderr)
+            return 1
+        gmap = parse_gains_map(args.gains_map)
+        g_all = rc.split_fengine_coeffs(np.load(args.gains), n_chan=len(freqs))
+        missing = [a for a in gmap if a not in ants]
+        bad = [c for c in gmap.values() if not 0 <= c < g_all.shape[0]]
+        if missing or bad:
+            print(f"error: antennas {missing} not in the cube or chains {bad} not in the file", file=sys.stderr)
+            return 1
+        keep = [ants.index(a) for a in gmap]
+        vis = vis[np.ix_(keep, keep)]
+        ants = list(gmap)
+        chains = [gmap[a] for a in ants]
+        gains = np.where(g_all[chains] > 0, g_all[chains], np.nan)
+        print(f"digital gains from {args.gains}: antenna -> chain {gmap}; census on input power A / g^2")
     res = census(vis, freqs, ants, args.window, args.k, args.persistent, args.intermittent,
-                 None if args.no_variability else args.var_sigma, n_blocks=args.blocks)
+                 None if args.no_variability else args.var_sigma, n_blocks=args.blocks, gains=gains)
     print(f"{vis.shape[-1]} frames; valid per antenna: "
           + ", ".join(f"{a}: {int(v.sum())}" for a, v in zip(ants, res["valid"])))
     print("band fraction per antenna (persistent / intermittent / variable):")
@@ -212,8 +251,11 @@ def cmd_census(args) -> int:
              spec=res["spec"], array_cls=res["array_cls"],
              fringe_major=fringe_major if fringe_major is not None else np.array([]),
              fringe_names=np.array(names or []), table=table if table is not None else np.array([]),
-             params=np.array([args.window, args.k, args.persistent, args.intermittent]))
-    plot(os.path.join(args.out, "rfi_census.png"), freqs, ants, res, fringe_major)
+             params=np.array([args.window, args.k, args.persistent, args.intermittent]),
+             gains=gains if gains is not None else np.array([]),
+             chains=np.array(chains if chains is not None else []))
+    plot(os.path.join(args.out, "rfi_census.png"), freqs, ants, res, fringe_major,
+         ylabel="A/g$^2$ [dB]" if gains is not None else "[dB]")
     print(f"\nsaved {args.out}/rfi_census.npz and rfi_census.png")
     return 0
 
@@ -239,6 +281,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--intermittent", type=float, default=0.05, help="Occupancy for intermittent.")
     c.add_argument("--var-sigma", type=float, default=3.0, help="threshold_sigma of mad_rfi_zapper.")
     c.add_argument("--no-variability", action="store_true", help="Skip the mad_rfi_zapper criterion.")
+    c.add_argument("--gains", default=None,
+                   help="F-engine coefficient .npy (digital gains, all chains); census on A / g^2.")
+    c.add_argument("--gains-map", default=None,
+                   help="antenna:chain pairs for --gains, e.g. 0:0,5:5 (only these antennas are used).")
     c.add_argument("--blocks", type=int, default=2,
                    help="Frequency blocks normalized separately per frame (GPU frame blocks).")
     c.add_argument("--out", required=True, help="Output directory.")

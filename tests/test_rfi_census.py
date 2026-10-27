@@ -149,3 +149,54 @@ def test_census_with_mad_rfi_zapper(tmp_path):
     z, _, _ = run_census(tmp_path, ["--var-sigma", "3"])
     assert z["array_cls"][VARIABLE] >= 1
     assert np.mean(z["array_cls"] == 0) > 0.95
+
+
+def fengine_coeffs(gains, offsets, n_bins=1024):
+    """Flat coefficient array as the F-engine stores it: one band run per chain."""
+    flat = np.zeros(len(offsets) * n_bins, dtype=np.int64)
+    for c, off in enumerate(offsets):
+        flat[c * n_bins + off:c * n_bins + off + gains.shape[1]] = gains[c]
+    return flat
+
+
+def test_split_fengine_coeffs():
+    rng = np.random.default_rng(4)
+    g = rng.integers(1, 900, size=(8, F))
+    offsets = [1000, 856, 720, 592, 456, 320, 192, 48]
+    flat = fengine_coeffs(g, offsets)
+    out = rc.split_fengine_coeffs(flat, n_chan=F)
+    assert out.shape == (8, F) and np.array_equal(out, g)
+    bad = flat.copy()
+    bad[1880 + 10] = 0                              # zero inside chain 1's band
+    with pytest.raises(ValueError):
+        rc.split_fengine_coeffs(bad, n_chan=F)
+
+
+def test_census_with_digital_gains(tmp_path):
+    """Calibrated output is flat; the RFI is only in the gains. A / g^2 recovers it."""
+    rng = np.random.default_rng(5)
+    freqs = 300.0 + 0.3 * np.arange(F)
+    rfi = np.ones(F)
+    rfi[400] = 30.0                                  # strong persistent emitter
+    g = np.full((8, F), 500.0)
+    g[0] = 500.0 / np.sqrt(rfi)                      # loop lowers the gain where the input is high
+    g[5] = 250.0 / np.sqrt(rfi)
+    vis = np.zeros((3, 3, F, T), dtype=np.complex64)
+    for a in range(3):
+        vis[a, a] = 1 + 0.01 * rng.standard_normal((F, T))   # flat calibrated output
+    np.savez(tmp_path / "vis.npz", vis=vis, times=np.arange(T) * 10.24, freqs=freqs, ants=np.array([0, 5, 32]))
+    np.save(tmp_path / "coeffs.npy", fengine_coeffs(np.rint(g).astype(np.int64), [1000, 856, 720, 592, 456, 320, 192, 48]))
+    base = [sys.executable, str(SCRIPT), "census", "--vis", str(tmp_path / "vis.npz"), "--no-variability"]
+    r = subprocess.run(base + ["--out", str(tmp_path / "raw")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    raw = np.load(tmp_path / "raw" / "rfi_census.npz")
+    assert raw["cls"][0, 400] == 0                   # invisible in the calibrated output
+    r = subprocess.run(base + ["--out", str(tmp_path / "g"), "--gains", str(tmp_path / "coeffs.npy"),
+                               "--gains-map", "0:0,5:5"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    z = np.load(tmp_path / "g" / "rfi_census.npz")
+    assert z["ants"].tolist() == [0, 5] and z["chains"].tolist() == [0, 5]
+    assert (z["cls"][:, 400] == 3).all()
+    r = subprocess.run(base + ["--out", str(tmp_path / "x"), "--gains", str(tmp_path / "coeffs.npy")],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "--gains-map" in r.stderr
