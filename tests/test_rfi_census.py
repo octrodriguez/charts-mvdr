@@ -164,8 +164,11 @@ def test_split_fengine_coeffs():
     g = rng.integers(1, 900, size=(8, F))
     offsets = [1000, 856, 720, 592, 456, 320, 192, 48]
     flat = fengine_coeffs(g, offsets)
-    out = rc.split_fengine_coeffs(flat, n_chan=F)
+    out = rc.split_fengine_coeffs(flat, n_chan=F, flipped=())
     assert out.shape == (8, F) and np.array_equal(out, g)
+    fl = rc.split_fengine_coeffs(flat, n_chan=F)                     # default: chains 1-3 reversed
+    assert np.array_equal(fl[[0, 4, 5, 6, 7]], g[[0, 4, 5, 6, 7]])
+    assert np.array_equal(fl[1:4], g[1:4, ::-1])
     bad = flat.copy()
     bad[1880 + 10] = 0                              # zero inside chain 1's band
     with pytest.raises(ValueError):
@@ -185,6 +188,7 @@ def test_census_with_digital_gains(tmp_path):
     for a in range(3):
         vis[a, a] = 1 + 0.01 * rng.standard_normal((F, T))   # flat calibrated output
     np.savez(tmp_path / "vis.npz", vis=vis, times=np.arange(T) * 10.24, freqs=freqs, ants=np.array([0, 5, 32]))
+    g[1:4] = g[1:4, ::-1]                            # file holds the LO - IF chains reversed
     np.save(tmp_path / "coeffs.npy", fengine_coeffs(np.rint(g).astype(np.int64), [1000, 856, 720, 592, 456, 320, 192, 48]))
     base = [sys.executable, str(SCRIPT), "census", "--vis", str(tmp_path / "vis.npz"), "--no-variability"]
     r = subprocess.run(base + ["--out", str(tmp_path / "raw")], capture_output=True, text=True)

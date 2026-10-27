@@ -32,17 +32,22 @@ import numpy as np
 CLASSES = ("clean", "variable", "intermittent", "persistent")   # increasing severity
 
 
-def split_fengine_coeffs(coeffs, n_chan: int = 672):
+FDM_FLIPPED_CHAINS = (1, 2, 3)   # LO - IF sub-bands: sky frequency decreases with FFT bin
+
+
+def split_fengine_coeffs(coeffs, n_chan: int = 672, flipped=FDM_FLIPPED_CHAINS):
     """Per-chain digital gains from a flat F-engine coefficient array.
 
-    The coefficient file of the requantizer (e.g. final_coeffs_adc0.npy, int64,
-    8 chains x 1024 FFT bins) holds, for each chain, one contiguous run of
-    `n_chan` non-zero coefficients (the band, channel k at 300 + 0.3 k MHz, in
-    increasing frequency) at a chain-dependent offset, and zeros elsewhere. The
-    runs are found as maximal non-zero segments and returned in file order,
-    shape (n_chains, n_chan), float. Raises ValueError if any segment does not
-    have exactly `n_chan` coefficients (a zero inside the band, or another
-    layout).
+    The coefficient file of the requantizer (e.g. final_coeffs_adc0.npy, int64)
+    covers the full FFT of one ADC, 8192 bins of 0.3 MHz from 0 to 2457.6 MHz. The
+    frequency-division multiplexer (Lau et al., CHARTS front-end paper, Table I)
+    places the 300-501.6 MHz band of chain i in sub-band i: chain 0 directly at
+    300-501.6 MHz (bin 1000), chains 1-7 translated by their LO. Each chain is one
+    contiguous run of `n_chan` non-zero coefficients, zeros elsewhere. Chains in
+    `flipped` use the lower sideband (LO - IF, chains 1-3), so their run is in
+    decreasing sky frequency and is reversed here. Returns (n_chains, n_chan) float,
+    channel k at 300 + 0.3 k MHz for every chain. Raises ValueError if a run does not
+    have exactly `n_chan` coefficients (a zero inside the band, or another layout).
     """
     c = np.asarray(coeffs).ravel()
     nz = np.flatnonzero(c)
@@ -54,7 +59,11 @@ def split_fengine_coeffs(coeffs, n_chan: int = 672):
     lengths = ends - starts
     if np.any(lengths != n_chan):
         raise ValueError(f"expected runs of {n_chan} non-zero coefficients; got lengths {lengths.tolist()}")
-    return np.stack([c[s:e] for s, e in zip(starts, ends)]).astype(float)
+    out = np.stack([c[s:e] for s, e in zip(starts, ends)]).astype(float)
+    for i in flipped:
+        if i < out.shape[0]:
+            out[i] = out[i, ::-1]
+    return out
 
 
 def robust_sigma(x, axis=None):
