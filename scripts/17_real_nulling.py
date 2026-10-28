@@ -117,10 +117,12 @@ def build_parser():
     p.add_argument("--gain-antennas", default=None, help="Logical antennas of the gains columns, e.g. 0,5,32,37.")
     p.add_argument("--antennas", default=None, help="Antennas to use (default: --gain-antennas or all).")
     p.add_argument("--interp-gains", action="store_true", help="Interpolate gains over unsolved channels.")
+    p.add_argument("--gain-edge", default="linear", choices=list(tracking.EDGE_MODES),
+                   help="Gains outside the solved range: linear phase (fitted delay), nearest value, or NaN.")
     p.add_argument("--positions", required=True, help="Positions .npy (n, 3), ENU metres, logical order.")
     p.add_argument("--look", default="sun", help="'sun', 'zenith' or 'l,m'.")
     p.add_argument("--sign", default="auto", choices=["auto", "1", "-1"],
-                   help="Steering phase convention; -1 for frames read with charts-utils (measured on corr_1027).")
+                   help="Steering phase convention; -1 for real frames (charts-utils fringe model; measured on corr_1027).")
     p.add_argument("--half-window", type=int, default=10)
     p.add_argument("--guard", type=int, default=1)
     p.add_argument("--loading", type=float, default=10.0, help="Loading in units of the reference eigenvalue.")
@@ -157,7 +159,7 @@ def main(argv=None) -> int:
             return 1
         g = g[:, [gain_ants.index(a) for a in ants]]
         if args.interp_gains:
-            g, interp = tracking.interpolate_gains(g, freqs)
+            g, interp = tracking.interpolate_gains(g, freqs, edge=args.gain_edge)
         gains = g
     interp_any = interp.any(axis=1)
 

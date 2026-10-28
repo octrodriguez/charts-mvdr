@@ -35,7 +35,24 @@ CLASSES = ("clean", "variable", "intermittent", "persistent")   # increasing sev
 FDM_FLIPPED_CHAINS = (1, 2, 3)   # LO - IF sub-bands: sky frequency decreases with FFT bin
 
 
-def split_fengine_coeffs(coeffs, n_chan: int = 672, flipped=FDM_FLIPPED_CHAINS):
+N_FDM_CHAINS = 8
+FFT_BIN_MHZ = 0.3                # F-engine FFT bin width (8192 bins over 0-2457.6 MHz)
+
+
+def fdm_start_bins(df_mhz: float = FFT_BIN_MHZ) -> list:
+    """FFT bin of the first coefficient of each FDM chain, from charts_constants.CHAIN_BANDS.
+
+    CHAIN_BANDS holds the (low, high) ADC frequency of every chain in MHz; the run of
+    chain i starts at bin round(low_i / df). With the October 2026 constants:
+    [1000, 1880, 2768, 3664, 4552, 5440, 6336, 7216].
+    """
+    from charts_constants import CHAIN_BANDS
+
+    return [int(round(lo / df_mhz)) for lo, _ in CHAIN_BANDS]
+
+
+def split_fengine_coeffs(coeffs, n_chan: int = 672, flipped=FDM_FLIPPED_CHAINS,
+                         n_chains: int | None = N_FDM_CHAINS, start_bins=None):
     """Per-chain digital gains from a flat F-engine coefficient array.
 
     The coefficient file of the requantizer (e.g. final_coeffs_adc0.npy, int64)
@@ -48,6 +65,14 @@ def split_fengine_coeffs(coeffs, n_chan: int = 672, flipped=FDM_FLIPPED_CHAINS):
     decreasing sky frequency and is reversed here. Returns (n_chains, n_chan) float,
     channel k at 300 + 0.3 k MHz for every chain. Raises ValueError if a run does not
     have exactly `n_chan` coefficients (a zero inside the band, or another layout).
+
+    Chains are assigned to runs in increasing FFT bin, so a chain whose
+    coefficients are all zero would shift every later chain (and the flip) by
+    one. Two guards: the number of runs must equal `n_chains` (None skips the
+    check), and with `start_bins` (FFT bin of the first coefficient of each
+    chain, from the FDM plan) every run must start at one of them; the output
+    then has one row per entry of `start_bins`, NaN for chains without
+    coefficients.
     """
     c = np.asarray(coeffs).ravel()
     nz = np.flatnonzero(c)
@@ -59,7 +84,19 @@ def split_fengine_coeffs(coeffs, n_chan: int = 672, flipped=FDM_FLIPPED_CHAINS):
     lengths = ends - starts
     if np.any(lengths != n_chan):
         raise ValueError(f"expected runs of {n_chan} non-zero coefficients; got lengths {lengths.tolist()}")
-    out = np.stack([c[s:e] for s, e in zip(starts, ends)]).astype(float)
+    if start_bins is not None:
+        start_bins = [int(b) for b in start_bins]
+        unknown = sorted(set(starts.tolist()) - set(start_bins))
+        if unknown:
+            raise ValueError(f"runs start at bins {unknown}, not in start_bins {start_bins}")
+        out = np.full((len(start_bins), n_chan), np.nan)
+        for s, e in zip(starts, ends):
+            out[start_bins.index(int(s))] = c[s:e]
+    else:
+        if n_chains is not None and starts.size != n_chains:
+            raise ValueError(f"expected {n_chains} runs (one per FDM chain), got {starts.size} starting at "
+                             f"bins {starts.tolist()}; pass start_bins to map runs to chains")
+        out = np.stack([c[s:e] for s, e in zip(starts, ends)]).astype(float)
     for i in flipped:
         if i < out.shape[0]:
             out[i] = out[i, ::-1]

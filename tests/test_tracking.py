@@ -90,6 +90,27 @@ def test_interpolate_gains_linear_phase():
         tracking.interpolate_gains(np.full((5, 1), np.nan + 0j), freqs[:5])
 
 
+def test_interpolate_gains_edges():
+    """Band edges outside the solved range keep the delay (patch 0026)."""
+    freqs = 300.0 + 0.3 * np.arange(672)
+    tau = np.array([[0.0, -5.7e-9]])
+    g = np.exp(2j * np.pi * freqs[:, None] * 1e6 * tau)
+    gap = g.copy()
+    gap[freqs >= 448.0] = np.nan                     # flagged top of the band, as corr_1027
+    gap[:10, 1] = np.nan                             # and the bottom edge for antenna 1
+    top = freqs >= 448.0
+    out, filled = tracking.interpolate_gains(gap, freqs)
+    assert filled[top].all() and filled[:10, 1].all()
+    assert np.max(np.abs(np.angle(out[top] / g[top]))) < 1e-6
+    assert np.max(np.abs(np.angle(out[:10, 1] / g[:10, 1]))) < 1e-6
+    near, _ = tracking.interpolate_gains(gap, freqs, edge="nearest")
+    assert np.max(np.abs(np.angle(near[top, 1] / g[top, 1]))) > 1.5   # 2 pi tau df ~ 1.9 rad
+    nan, fnan = tracking.interpolate_gains(gap, freqs, edge="nan")
+    assert np.isnan(nan[top]).all() and not fnan[top].any()
+    with pytest.raises(ValueError):
+        tracking.interpolate_gains(gap, freqs, edge="cubic")
+
+
 def test_write_sidecar(tmp_path):
     p = tracking.write_sidecar(tmp_path / "gains_20261027T135000Z.npy", calibrator="sun", ref_ant=0,
                                antennas=[0, 5], notes="test")

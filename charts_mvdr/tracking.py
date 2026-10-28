@@ -30,13 +30,26 @@ SIDECAR_KEYS = ("created_utc", "valid_from_utc", "valid_to_utc", "calibrator", "
                 "antennas", "positions_file", "fengine_gains", "charts_utils_commit")
 
 
-def interpolate_gains(g, freqs):
+EDGE_MODES = ("linear", "nearest", "nan")
+
+
+def interpolate_gains(g, freqs, edge: str = "linear", n_edge: int = 20):
     """Fill NaN gains per antenna: linear in amplitude and in unwrapped phase.
 
     g: (n_freq, n_ant) complex with NaN where there is no solution; freqs
-    increasing. Channels outside the solved range take the nearest solved value.
+    increasing. Gaps between solved channels are interpolated. Channels outside
+    the solved range (below the first or above the last solved channel) follow
+    `edge`:
+      "linear"   amplitude of the nearest solved channel, phase extrapolated with
+                 the slope (delay) of a straight-line fit to the unwrapped phase of
+                 the `n_edge` solved channels closest to that edge (default);
+      "nearest"  amplitude and phase of the nearest solved channel (the behaviour
+                 before patch 0026: wrong by 2 pi tau df for a relative delay tau);
+      "nan"      left as NaN (not filled).
     Returns (filled gains, mask of filled channels (n_freq, n_ant)).
     """
+    if edge not in EDGE_MODES:
+        raise ValueError(f"edge must be one of {EDGE_MODES}, got {edge!r}")
     g = np.asarray(g, dtype=np.complex128)
     freqs = np.asarray(freqs, dtype=float)
     out = g.copy()
@@ -45,10 +58,21 @@ def interpolate_gains(g, freqs):
         ok = np.isfinite(g[:, a]) & (g[:, a] != 0)
         if ok.sum() < 2:
             raise ValueError(f"antenna index {a}: fewer than 2 solved channels")
-        amp = np.interp(freqs, freqs[ok], np.abs(g[ok, a]))
-        ph = np.interp(freqs, freqs[ok], np.unwrap(np.angle(g[ok, a])))
-        out[~ok, a] = (amp * np.exp(1j * ph))[~ok]
-        filled[:, a] = ~ok
+        fo, ph_ok = freqs[ok], np.unwrap(np.angle(g[ok, a]))
+        amp = np.interp(freqs, fo, np.abs(g[ok, a]))
+        ph = np.interp(freqs, fo, ph_ok)
+        lo, hi = freqs < fo[0], freqs > fo[-1]
+        if edge == "linear":
+            k = min(max(int(n_edge), 2), fo.size)
+            for side, sel in ((slice(0, k), lo), (slice(fo.size - k, fo.size), hi)):
+                if sel.any():
+                    slope, icpt = np.polyfit(fo[side], ph_ok[side], 1)
+                    ph[sel] = icpt + slope * freqs[sel]
+        fill = ~ok
+        if edge == "nan":
+            fill &= ~(lo | hi)
+        out[fill, a] = (amp * np.exp(1j * ph))[fill]
+        filled[:, a] = fill
     return out, filled
 
 

@@ -175,6 +175,36 @@ def test_split_fengine_coeffs():
         rc.split_fengine_coeffs(bad, n_chan=F)
 
 
+def test_split_fengine_coeffs_missing_chain():
+    """A chain without coefficients must not shift the later chains (patch 0026)."""
+    rng = np.random.default_rng(6)
+    g = rng.integers(1, 900, size=(8, F))
+    offsets = [1000, 856, 720, 592, 456, 320, 192, 48]
+    flat = fengine_coeffs(g, offsets)
+    starts = [c * 1024 + off for c, off in enumerate(offsets)]
+    flat[starts[2]:starts[2] + F] = 0                # chain 2 unused
+    with pytest.raises(ValueError, match="pass start_bins"):
+        rc.split_fengine_coeffs(flat, n_chan=F)
+    out = rc.split_fengine_coeffs(flat, n_chan=F, start_bins=starts)
+    assert out.shape == (8, F) and np.isnan(out[2]).all()
+    assert np.array_equal(out[3], g[3, ::-1]) and np.array_equal(out[4], g[4])
+    with pytest.raises(ValueError, match="not in start_bins"):
+        rc.split_fengine_coeffs(flat, n_chan=F, start_bins=starts[:2] + starts[3:-1])
+    assert rc.split_fengine_coeffs(flat, n_chan=F, n_chains=None).shape == (7, F)
+
+
+def test_fdm_start_bins_match_chain_bands():
+    """Start bins from charts_constants.CHAIN_BANDS: 672-bin runs at the FDM plan offsets."""
+    cc = pytest.importorskip("charts_constants")
+    bins = rc.fdm_start_bins()
+    assert bins == [1000, 1880, 2768, 3664, 4552, 5440, 6336, 7216]
+    assert all(round((hi - lo) / rc.FFT_BIN_MHZ) == 672 for lo, hi in cc.CHAIN_BANDS)
+    offsets = [b - c * 1024 for c, b in enumerate(bins)]          # layout used by fengine_coeffs
+    g = np.random.default_rng(7).integers(1, 900, size=(8, F))
+    out = rc.split_fengine_coeffs(fengine_coeffs(g, offsets), n_chan=F, start_bins=bins)
+    assert np.array_equal(out[0], g[0]) and np.array_equal(out[1], g[1, ::-1])
+
+
 def test_census_with_digital_gains(tmp_path):
     """Calibrated output is flat; the RFI is only in the gains. A / g^2 recovers it."""
     rng = np.random.default_rng(5)

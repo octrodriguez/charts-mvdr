@@ -210,7 +210,8 @@ def cmd_census(args) -> int:
             print("error: --gains needs --gains-map (antenna:chain,...)", file=sys.stderr)
             return 1
         gmap = parse_gains_map(args.gains_map)
-        g_all = rc.split_fengine_coeffs(np.load(args.gains), n_chan=len(freqs))
+        g_all = rc.split_fengine_coeffs(np.load(args.gains), n_chan=len(freqs),
+                                        start_bins=rc.fdm_start_bins())
         missing = [a for a in gmap if a not in ants]
         bad = [c for c in gmap.values() if not 0 <= c < g_all.shape[0]]
         if missing or bad:

@@ -45,7 +45,7 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-Tested against `charts-utils` commit `ba2aa16` (2026-10-06).
+Tested against `charts-utils` commit `4ab71ed` (2026-10-19).
 `charts_constants` is resolved from site-packages (pip install from GitHub).
 
 ### Kotekan (optional, full tier)
@@ -151,13 +151,22 @@ legacy/                         # early exploratory scripts, kept for reference
 
 ## Roadmap
 
-Planned scripts:
+Array status (October 2026): four antennas on site (logical 0, 5, 32, 37, one east-west
+row) plus a CHORD feed on input 40; the correlator is configured for 64 inputs.
+CHARTS-64 is expected from mid-November to December 2026, the full array (256 inputs)
+in 2027.
 
-- `10_mvdr_real.py`: MVDR on real observations with a configurable window.
-- `11_fitburst_inject.py`: synthetic FRB injection into real data.
-- `12_paper_figures.py`: figures for memos and reports.
+Next:
 
-Longer term: port the beamformer to the real-time correlator pipeline.
+- `charts_mvdr/sensitivity.py`, `scripts/18_sun_sefd.py`: SEFD of the elements from the
+  Sun (correlation coefficient of long baselines, autocorrelations over the transit).
+- `scripts/19_source_sensitivity.py`: radiometer sensitivity, pulsar and FRB thresholds
+  versus number of antennas.
+- Joint fit of antenna positions (one position per antenna instead of one baseline per
+  pair), for the CHARTS-64 layout.
+- Configuration of the Kotekan MVDR stage from run metadata (element order, positions,
+  steering sign) and a first run on real correlator frames.
+- Synthetic FRB injection into real data.
 
 ## Usage
 
@@ -210,13 +219,18 @@ python scripts/11_fringe_coherence.py --input <frame_dir> --antennas <a,b,c> --p
 # RFI census (Fig. 3 complement): reduced cube where the frames live (light I/O, every n-th frame),
 # then the census anywhere; classes persistent / intermittent / variable crossed with the fringe classes
 python scripts/16_rfi_census.py extract --input <frame_dir> --antennas <a,b,c> --stride 4 --out <vis.npz>
-python scripts/16_rfi_census.py census --vis <vis.npz> --fringe <fringe_coherence.npz> --out <out_dir>
+python scripts/16_rfi_census.py census --vis <vis.npz> --fringe <fringe_coherence.npz> --out <out_dir> \
+    [--gains <final_coeffs_adc0.npy> --gains-map 0:0,5:5]
+# --gains: F-engine digital gains (8192 FFT bins, one run per FDM chain; chains 1-3 are lower
+# sideband and are reversed to increasing sky frequency; runs are mapped to chains with the
+# start bins of charts_constants.CHAIN_BANDS); the census runs on A / g^2.
 
 # Nulling test on real covariances (stage rules, look direction tracked frame by frame)
 python scripts/17_real_nulling.py --vis <vis.npz> --gains <gains.npy> --gain-antennas <a,b,c> \
     --positions <positions.npy> --look sun --interp-gains --rfi <MHz ranges> --clean <MHz ranges> --out <out_dir> \
     [--sign -1 --loading-ref min --loading 0.1]
-# Real frames read with charts-utils need --sign -1 (measured on corr_1027). With few antennas use
+# Real frames need --sign -1 (see Conventions). Gains outside the solved range keep the fitted
+# delay (--gain-edge linear, default). With few antennas use
 # --loading-ref min: interference lifts the median eigenvalue and MVDR collapses to DFT.
 python tools/fig_real_nulling.py "<label>=<run_a>/real_nulling.npz" "<label>=<run_b>/real_nulling.npz" \
     --rfi <MHz ranges> --clean <MHz ranges> --out <figure.png>
@@ -291,7 +305,18 @@ excluded via `.gitignore`.
   exactly: the kernel negates one operand in 4-bit arithmetic, so -(-8) wraps
   to -8 and the imaginary part of the affected cross-correlations is wrong
   (always by multiples of 16). Simulated data must be clipped to [-7, +7].
-- Steering vector: `a_n = exp(-j 2 pi f (l x_n + m y_n) / c)`.
+- Steering vector (simulations, Kotekan test generator): `a_n = exp(-j 2 pi f (l x_n + m y_n) / c)`.
+- Real data follow the opposite sign: charts-utils models the raw phase of
+  `V_ab = x_a conj(x_b)` as `+2 pi f s.(r_a - r_b) / c` (the antenna closer to the source
+  receives first), which fits the real fringes; real frames therefore need conjugated
+  steering vectors (`sign = -1` in `tracking.run_tracking`, `--sign -1` in 17). For a
+  single east-west row this equals a sign error in x, so check the positions file first.
+- Antenna positions: logical antenna order, ENU metres. The design layout is the
+  charts-utils default grid (`default_charts_antenna_positions`: eight antennas per
+  east-west row, 0.6 m spacing, index increasing west then north; 4.2 m x 4.2 m for
+  CHARTS-64). The four October 2026 antennas are not on it (one row at 0, 0.6, 3.6 and
+  4.2 m west of antenna 0, fitted from the Sun), so real data use a measured
+  `positions_*.npy` until the array follows the design.
 - Voltages in ADC units (LSB).
 - Baseband frame: 1536 samples × 10/3 µs = 5.12 ms. One simulated correlation
   dump per frame; the production correlator integrates 10.24 s.
