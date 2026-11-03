@@ -6,15 +6,17 @@ Writes, under OUT_ROOT:
   gained/  the same frames with every antenna multiplied by a gain phase q in {1, j, -1, -j}
            (random per channel and antenna), plus the metadata
   gains_test.npy / .json  the gains in the charts-utils format (complex64, (n_rows, n_ant),
-           convention v_obs = g v, rows = channels from 300 MHz): g = A q for the window
-           channels and 1 elsewhere; sidecar as in the gains format spec.
+           rows = channels from 300 MHz): g = A conj(q) for the window channels and 1
+           elsewhere; sidecar as in the gains format spec. charts-utils reads Kotekan
+           frames as x = conj(v), so a calibration of the gained window would give
+           x_obs = conj(q) x; consumers conjugate the file back to the voltage gain.
 
 Quarter-turn phases keep the 4-bit samples exact, except a component of -8 that would
 become +8, which is saturated to +7 (counted and reported; it limits how exactly a
 calibrated beam can match the clean one). The amplitude A (--amplitude) is put in the
-file only: a beamformer that applies 1 / g to the gained window must reproduce the clean
-beam scaled by exactly 1 / A, which checks the amplitude (divide, not multiply) as well as
-the phase (1 / g, not g or 1 / g*).
+file only: a beamformer that applies 1 / conj(g) to the gained window must reproduce the
+clean beam scaled by exactly 1 / A, which checks the amplitude (divide, not multiply) as
+well as the phase (1 / conj(g), not g or 1 / g).
 
 Antennas are logical (the order of the gains file); element e of a frame holds antenna
 N - 1 - e with --antenna-order descending (the cudaDirectBeamTracker default) or e with
@@ -120,7 +122,7 @@ def main(argv=None):
 
     g = np.ones((args.file_rows, na), dtype=np.complex64)
     rows = slice(args.first_channel, args.first_channel + nf)
-    g[rows] = (args.amplitude * (1j ** k_ant)).astype(np.complex64)
+    g[rows] = (args.amplitude * np.conj(1j ** k_ant)).astype(np.complex64)
     gfile = args.out_root / "gains_test.npy"
     np.save(gfile, g)
     side = {

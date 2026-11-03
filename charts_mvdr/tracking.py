@@ -108,7 +108,8 @@ def run_tracking(vis, freqs_hz, pos_x, pos_y, look_lm, gains=None, half_window: 
 
     vis: (n_ant, n_ant, n_chan, n_frames) covariances (V_ab = x_a x_b^*, as
     charts-utils readers); look_lm: (n_frames, 2) direction cosines (east,
-    north); gains: (n_chan, n_ant) or None; channels with a non-finite gain in
+    north); gains: (n_chan, n_ant) or None, charts-utils convention, used as is
+    on these cubes (x_obs = g x); channels with a non-finite gain in
     any antenna are skipped (NaN). sign = -1 uses conjugated steering vectors
     (the other phase convention; the one measured on real CHARTS data read with
     charts-utils, corr_1027). loading_ref: see batched_mvdr.

@@ -148,12 +148,36 @@ def test_load_gains(tmp_path):
     np.save(tmp_path / "g.npy", g)
     out = load_gains(tmp_path / "g.npy", channels=[1, 3], n_ant=3)
     assert out.dtype == np.complex128
-    np.testing.assert_array_equal(out, g[[1, 3]])
+    np.testing.assert_array_equal(out, np.conj(g[[1, 3]]))           # voltage domain
     np.save(tmp_path / "t.npy", np.zeros((4, 3, 2), complex))
     with pytest.raises(ValueError):
         load_gains(tmp_path / "t.npy")
     with pytest.raises(ValueError):
         load_gains(tmp_path / "g.npy", n_ant=4)
+
+
+def test_gains_convention_charts_utils_view(tmp_path):
+    """A file solved from the charts-utils view of Kotekan frames corrects the voltages
+    only after conjugation: S = sum conj(v_i) v_j is read by charts-utils as V = x x^H
+    with x = conj(v), so its rank-1 gain is conj(q) for v_obs = q v."""
+    rng = np.random.default_rng(7)
+    n, k = 4, 20000
+    q = rng.uniform(0.5, 2.0, n) * np.exp(1j * rng.uniform(-np.pi, np.pi, n))
+    s = (rng.standard_normal(k) + 1j * rng.standard_normal(k)) * 3.0      # source at zenith
+    noise = rng.standard_normal((n, k)) + 1j * rng.standard_normal((n, k))
+    v = q[:, None] * (s[None, :] + noise)
+    S = np.einsum("it,jt->ij", v.conj(), v) / k                            # Kotekan product
+    V = S                                                                  # charts-utils view
+    evals, evecs = np.linalg.eigh(V)
+    g_file = evecs[:, -1] * np.sqrt(evals[-1])                             # rank-1 solution
+    np.save(tmp_path / "g.npy", g_file[None, :].astype(np.complex64))
+    g_v = load_gains(tmp_path / "g.npy")[0]
+    R = np.einsum("it,jt->ij", v, v.conj()) / k                            # np_correlator
+    good = correct_gains(R, g_v)
+    bad = correct_gains(R, g_file)
+    off = ~np.eye(n, dtype=bool)
+    assert np.max(np.abs(np.angle(good[off]))) < 0.05
+    assert np.max(np.abs(np.angle(bad[off]))) > 0.5
 
 
 def test_load_correlation_stack_roundtrip(tmp_path):

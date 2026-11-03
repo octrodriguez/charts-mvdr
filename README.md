@@ -306,11 +306,19 @@ excluded via `.gitignore`.
   to -8 and the imaginary part of the affected cross-correlations is wrong
   (always by multiples of 16). Simulated data must be clipped to [-7, +7].
 - Steering vector (simulations, Kotekan test generator): `a_n = exp(-j 2 pi f (l x_n + m y_n) / c)`.
-- Real data follow the opposite sign: charts-utils models the raw phase of
-  `V_ab = x_a conj(x_b)` as `+2 pi f s.(r_a - r_b) / c` (the antenna closer to the source
-  receives first), which fits the real fringes; real frames therefore need conjugated
-  steering vectors (`sign = -1` in `tracking.run_tracking`, `--sign -1` in 17). For a
-  single east-west row this equals a sign error in x, so check the positions file first.
+- charts-utils readers take the stored Kotekan product as `V_ab = x_a conj(x_b)`, i.e.
+  `x = conj(v)`: cubes read with charts-utils (16, 17, `tracking.run_tracking`) are the
+  conjugate of `np_correlator` / `read_astron_correlation`. charts-utils models the phase
+  of `V_ab` as `+2 pi f s.(r_a - r_b) / c`, which fits the real fringes, so such cubes
+  need conjugated steering vectors (`sign = -1`, `--sign -1` in 17); the raw voltages
+  follow the simulator sign. For a single east-west row this equals a sign error in x,
+  so check the positions file first.
+- Gains files follow charts-utils (`x_obs = g x`), so the voltage-domain gain is
+  `conj(g)`. Code that works on charts-utils cubes uses `g` (`tracking.run_tracking`,
+  17); code that works on Kotekan voltages or correlations uses `conj(g)`
+  (`stage_reference.load_gains`, the Kotekan loader `chartsMvdr::load_gains_npy`).
+  Verified on the 2026-10-27 Sun transit: the tracker beam is coherent only with
+  measured ENU positions and `conj(g)`.
 - Antenna positions: logical antenna order, ENU metres. The design layout is the
   charts-utils default grid (`default_charts_antenna_positions`: eight antennas per
   east-west row, 0.6 m spacing, index increasing west then north; 4.2 m x 4.2 m for

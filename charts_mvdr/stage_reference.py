@@ -17,9 +17,13 @@ Weights are recomputed every ``update_every`` frames (and at the first frame
 with enough frames in its window) and held in between; frames before the first
 update are flagged (NaN power). An update is skipped when n_t < min_frames.
 
-Optional complex antenna gains follow the charts-utils convention
-(v_obs = g v, charts_utils.cal.algorithms.apply_gains): covariances are
-corrected as G^-1 R G^-H. The gains are indexed by logical antenna (the gains
+Gains files follow the charts-utils convention, x_obs = g x for the visibilities
+V_ab = x_a conj(x_b) that charts-utils reads from Kotekan frames
+(charts_utils.cal.algorithms.apply_gains). charts-utils takes the stored
+S_ij = sum conj(v_i) v_j as V, so x = conj(v) and the voltage-domain gain is
+conj(g): load_gains returns conj(g), as chartsMvdr::load_gains_npy, and the
+covariances R_ij = sum v_i conj(v_j) of this module are corrected as
+G_v^-1 R G_v^-H with G_v = diag(conj(g)). The gains are indexed by logical antenna (the gains
 file order); correlator element e holds antenna n - 1 - e with antenna_order
 "descending" (default, as the baseband frames and cudaDirectBeamTracker) or e
 with "ascending". Antennas whose gain is NaN in a channel are left out of that
@@ -58,6 +62,8 @@ def element_to_antenna(n: int, antenna_order: str = "descending") -> np.ndarray:
 def load_gains(path, channels=None, n_ant: int | None = None) -> np.ndarray:
     """Read a gains file (n_freq, n_ant) complex .npy, optionally for some channels.
 
+    The file follows the charts-utils convention; the voltage-domain gains
+    conj(g) are returned (see the module docstring), as the Kotekan loader does.
     Accepts complex64 or complex128 (returned as complex128). Time-resolved
     solutions (n_freq, n_ant, n_time) are rejected: average them first
     (cal_pipeline_gpu --save-avg-gains).
@@ -68,7 +74,7 @@ def load_gains(path, channels=None, n_ant: int | None = None) -> np.ndarray:
                          f"{g.dtype} {g.shape}")
     if n_ant is not None and g.shape[1] != n_ant:
         raise ValueError(f"{path}: {g.shape[1]} antennas, expected {n_ant}")
-    g = g.astype(np.complex128)
+    g = np.conj(g.astype(np.complex128))
     return g if channels is None else g[np.asarray(channels, dtype=int)]
 
 

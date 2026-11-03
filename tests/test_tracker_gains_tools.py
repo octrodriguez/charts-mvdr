@@ -46,8 +46,9 @@ def _tracker(window: Path, out: Path, corr=None):
 
 
 def _correctors(g, order="descending"):
+    """Correctors of the Kotekan loader: 1 / conj(g_file) (voltage domain)."""
     e2a = NA - 1 - np.arange(NA) if order == "descending" else np.arange(NA)
-    return 1.0 / g[:NF][:, e2a]
+    return 1.0 / np.conj(g[:NF][:, e2a])
 
 
 def _run(*args):
@@ -70,7 +71,7 @@ def test_gains_roundtrip_and_conventions(tmp_path):
     side = json.loads((t / "gains_test.json").read_text())
     # gained data = q * clean except saturated components
     v0, v1 = _volts(t / "clean" / "win_0000000.bin"), _volts(t / "gained" / "win_0000000.bin")
-    q_elem = (g[:NF] / 2.0)[:, NA - 1 - np.arange(NA)]
+    q_elem = np.conj(g[:NF] / 2.0)[:, NA - 1 - np.arange(NA)]      # file holds A conj(q)
     diff = np.abs(v1 - q_elem[None] * v0)
     assert np.count_nonzero(diff > 0) <= side["saturated_components"]
 
@@ -79,11 +80,12 @@ def test_gains_roundtrip_and_conventions(tmp_path):
     _tracker(t / "gained", t / "nocal")
     _tracker(t / "gained", t / "wrong", corr=g[:NF][:, NA - 1 - np.arange(NA)])   # multiply by g
     _tracker(t / "gained", t / "asc", corr=_correctors(g, "ascending"))           # wrong mapping
+    _tracker(t / "gained", t / "unconj", corr=1.0 / g[:NF][:, NA - 1 - np.arange(NA)])  # 1 / g
     cmp = ROOT / "tools" / "compare_tracker_beams.py"
     ok = _run(cmp, "--ref", t / "ref", "--test", t / "cal", "--expected-scale", "0.5")
     assert ok.returncode == 0, ok.stdout + ok.stderr
     assert "MATCH" in ok.stdout
-    for bad in ("nocal", "wrong", "asc"):
+    for bad in ("nocal", "wrong", "asc", "unconj"):
         r = _run(cmp, "--ref", t / "ref", "--test", t / bad, "--expected-scale", "0.5")
         assert r.returncode == 1, (bad, r.stdout)
 

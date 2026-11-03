@@ -9,7 +9,7 @@
 # Calibration proof of concept for cudaDirectBeamTrackerCommand: known quarter-turn gains are
 # applied to a simulated window (tools/apply_test_gains.py), the tracker runs on
 #   ref:   clean window, no gains file
-#   cal:   gained window, gains file (charts-utils format, v_obs = g v)
+#   cal:   gained window, gains file (charts-utils format; the tracker applies 1 / conj(g))
 #   nocal: gained window, no gains file
 # and tools/compare_tracker_beams.py checks cal = ref / A (A = amplitude in the file only).
 # Usage (from trig-login01, in $SCRATCH/charts-mvdr):
