@@ -97,3 +97,12 @@ def test_rotate_quarter_saturates():
     re, im = np.array([-8, 3]), np.array([2, -8])
     out_re, out_im, sat = rotate_quarter(re, im, np.array([2, 1]))
     assert out_re.tolist() == [7, 7] and out_im.tolist() == [-2, 3] and sat == 2
+
+
+def test_poc_job_passes_the_window_samples():
+    """The tracker config must use the samples of the window frames (create_tracker_gains_yaml
+    defaults to the production 15360, and rawFileRead then reads no frame)."""
+    job = (ROOT / "jobs" / "tracker_gains_poc.sh").read_text()
+    assert 'SAMPLES="${SAMPLES:-1536}"' in job
+    assert '--samples "$SAMPLES"' in job
+    assert "samples_per_data_set=int(samples)" in job

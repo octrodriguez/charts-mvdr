@@ -15,7 +15,10 @@
 # Usage (from trig-login01, in $SCRATCH/charts-mvdr):
 #   sbatch --export=ALL,KOTEKAN_SRC=$SCRATCH/kotekan-wt/feat-mvdr-stage,\
 #   WINDOW_DIR=$SCRATCH/data/sim_test/clean_v2/charts_sim_64ant jobs/tracker_gains_poc.sh
-# Optional: N_FRAMES (20), BEAMS ("0.4677 0.4801 -0.10 0.25"), AMPLITUDE (2.0), SEED (1).
+# Optional: N_FRAMES (20), BEAMS ("0.4677 0.4801 -0.10 0.25"), AMPLITUDE (2.0), SEED (1),
+# SAMPLES (1536: samples per window frame; apply_test_gains.py checks it against the frame
+# size, and it is passed to the config because create_tracker_gains_yaml defaults to the
+# production 15360, which rawFileRead rejects for these frames).
 set -euo pipefail
 SRC="${KOTEKAN_SRC:?set KOTEKAN_SRC to the Kotekan worktree with a built binary}"
 WIN_DIR="${WINDOW_DIR:?set WINDOW_DIR to the directory with <window>_%07d.bin frames}"
@@ -23,6 +26,7 @@ N_FRAMES="${N_FRAMES:-20}"
 BEAMS="${BEAMS:-0.4677 0.4801 -0.10 0.25}"
 AMPLITUDE="${AMPLITUDE:-2.0}"
 SEED="${SEED:-1}"
+SAMPLES="${SAMPLES:-1536}"
 OUT="$SCRATCH/data/tracker_gains/$(basename "$(dirname "$WIN_DIR")")_${SLURM_JOB_ID}"
 MVDR="$SCRATCH/charts-mvdr"
 
@@ -35,14 +39,14 @@ git -C "$MVDR" rev-parse --short HEAD > "$OUT/charts_mvdr_commit.txt"
 
 # 1) gained window and gains file
 python "$MVDR/tools/apply_test_gains.py" --window-dir "$WIN_DIR" --out-root "$OUT" \
-    --num-frames "$N_FRAMES" --amplitude "$AMPLITUDE" --seed "$SEED"
+    --num-frames "$N_FRAMES" --amplitude "$AMPLITUDE" --seed "$SEED" --samples "$SAMPLES"
 WINDOW=$(ls "$OUT/clean" | sed -n 's/_[0-9]\{7\}\.bin$//p' | head -n 1)
 
 # 2) three configs (same tracker settings, only input and gains differ)
-python - "$SRC" "$OUT" "$WINDOW" "$N_FRAMES" "$BEAMS" << 'PY'
+python - "$SRC" "$OUT" "$WINDOW" "$N_FRAMES" "$BEAMS" "$SAMPLES" << 'PY'
 import sys
 from pathlib import Path
-src, out, window, n, beams = sys.argv[1:]
+src, out, window, n, beams, samples = sys.argv[1:]
 sys.path.insert(0, str(Path(src) / "test_charts"))
 from sim.tracker_gains import create_tracker_gains_yaml
 out = Path(out)
@@ -52,7 +56,8 @@ for run, win, gains in (("ref", "clean", None), ("cal", "gained", out / "gains_t
                         ("nocal", "gained", None)):
     create_tracker_gains_yaml(out / f"{run}.yaml", out / win, window, out / run, "beams",
                               int(n), beams, gains_file=gains,
-                              gains_first_channel=0 if gains else None)
+                              gains_first_channel=0 if gains else None,
+                              samples_per_data_set=int(samples))
 print("configs:", [str(out / f"{r}.yaml") for r in ("ref", "cal", "nocal")])
 PY
 
