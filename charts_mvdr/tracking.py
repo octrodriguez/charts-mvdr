@@ -13,6 +13,10 @@ frequency, so that RFI channels, which are usually flagged in the calibration,
 can still be beamformed with calibrated steering. Interpolated channels are
 returned in a mask: results there depend on the gains being smooth.
 
+`expand_gains` places the columns of a calibration solution (one per solved
+antenna) at their logical inputs of a full-width array, NaN elsewhere: the
+layout that the Kotekan gains loaders read without an antenna subset.
+
 `write_sidecar` writes the JSON metadata next to a gains file
 (charts_gains_format_spec.md, Sec. 1).
 """
@@ -74,6 +78,31 @@ def interpolate_gains(g, freqs, edge: str = "linear", n_edge: int = 20):
         out[fill, a] = (amp * np.exp(1j * ph))[fill]
         filled[:, a] = fill
     return out, filled
+
+
+def expand_gains(g, columns, num_inputs: int):
+    """Full-width gains (n_freq, num_inputs): column j of g goes to logical input columns[j].
+
+    g: (n_freq, n_cols) complex, one column per solved antenna (cal_pipeline_gpu
+    --save-avg-gains with --antennas); columns: the logical input of each column;
+    num_inputs: signal inputs of the correlator (all of them, so that the file can be
+    read by every consumer without an antenna subset). Inputs not in columns are NaN
+    (no solution: the consumers drop them). Values are copied unchanged (same
+    convention as the input file). Returns complex128.
+    """
+    g = np.asarray(g)
+    if g.ndim != 2 or not np.iscomplexobj(g):
+        raise ValueError(f"gains must be a complex (n_freq, n_cols) array, got {g.dtype} {g.shape}")
+    columns = [int(c) for c in columns]
+    if len(columns) != g.shape[1]:
+        raise ValueError(f"{g.shape[1]} gain columns but {len(columns)} antennas given")
+    if len(set(columns)) != len(columns):
+        raise ValueError(f"repeated antennas in {columns}")
+    if num_inputs < 1 or min(columns) < 0 or max(columns) >= num_inputs:
+        raise ValueError(f"antennas {columns} outside [0, {num_inputs})")
+    out = np.full((g.shape[0], int(num_inputs)), np.nan, dtype=np.complex128)
+    out[:, columns] = g
+    return out
 
 
 LOADING_REFS = ("median", "min")
