@@ -128,6 +128,8 @@ scripts/
   16_rfi_census.py              # real frames: reduced cube (extract) and RFI census crossed with fringe classes (census)
   17_real_nulling.py            # real covariances: DFT vs MVDR towards a tracked look direction, rejection and WNG per channel
   18_kotekan_real_mvdr.py       # chartsMVDRBeams on real correlation frames: window + configs (prepare), check against 17 (compare)
+  19_fringe_recovery.py         # Sun fringe recovery in RFI bands after nulling (MVDR filter or whitened eigenmode projection); 2-D phase vs model
+  20_nulling_gains.py           # per-antenna power before/after eigenmode nulling (BURSTT-style) and the voltage-domain matrices M = P G^-1
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -147,6 +149,8 @@ tools/
   compare_tracker_beams.py      # complex scale and residual between two tracker runs
   fig_beam_response.py          # composite beam-response figure (maps; null depth and WNG vs distance to a grating lobe, ideal model)
   fig_real_nulling.py           # real-data nulling figure: MVDR/DFT ratio and WNG per channel, several runs overlaid
+  fig_beam_power.py             # beam power without (DFT) and with (MVDR) nulling from a 17_real_nulling output
+  fig_phase2d_nulling.py        # visibility phase vs time and frequency for antenna pairs, before/after nulling selected bands
   kotekan_gains.py              # full-width gains file (one column per correlator input, NaN unsolved) from a calibration solution
 legacy/                         # early exploratory scripts, kept for reference
 ```
@@ -263,6 +267,15 @@ python scripts/17_real_nulling.py --vis <out_dir>/vis_window.npz --gains <soluti
     --gain-antennas <a,b,c> --interp-gains --positions <positions.npy> --look <l,m> --sign auto \
     --clean <MHz ranges> --half-window 40 --loading 0.1 --out <out_dir>/nulling
 python scripts/18_kotekan_real_mvdr.py compare --prepared <out_dir> --nulling <out_dir>/nulling --beam 0
+
+# Does the sky come back after nulling? Fringes of the Sun in an RFI band, against the model
+# filtered the same way (2-D phase figure by default); per-antenna power and voltage matrices.
+python scripts/19_fringe_recovery.py --vis <cube.npz> --gains <solution.npy> --gain-antennas <a,b,c> \
+    --positions <positions.npy> --filter mvdr --bands <rfi MHz> <clean MHz> --examples <MHz> --out <prefix>
+python scripts/20_nulling_gains.py --vis <cube.npz> --gains <solution.npy> --gain-antennas <a,b,c> \
+    --auto 2 --rfi <MHz ranges> --out <prefix>
+python tools/fig_phase2d_nulling.py --vis <cube.npz> --gains <solution.npy> --gain-antennas <a,b,c> \
+    --pairs <a,b> --zoom <MHz> --null-bands <MHz> --demean --out <png>
 
 # Figures from the Kotekan stage: beam response of the applied weights (07 --stage-npz, then
 # tools/fig_beam_response.py) and waterfalls of a paired FRB window (15)
