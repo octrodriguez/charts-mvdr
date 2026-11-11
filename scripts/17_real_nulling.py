@@ -3,9 +3,10 @@
 17_real_nulling.py — Nulling test of the stage algorithm on real covariances.
 
 Reads a covariance cube saved by 16_rfi_census.py extract (vis (M, M, n_freq,
-n_frames), times, freqs, ants), complex gains from cal_pipeline_gpu.py
-(--save-avg-gains, columns in the order of --gain-antennas) and antenna
-positions (ENU metres, logical order). For each frame it forms DFT and MVDR
+n_frames), times, freqs, ants), complex gains from cal_pipeline_gpu.py (the .npz
+gain file, or a bare .npy with --gain-antennas and --gains-format) and antenna
+positions (ENU metres, logical order). Cubes and gains of either charts-utils
+generation are converted on load (charts_mvdr.real_io). For each frame it forms DFT and MVDR
 beams towards a look direction (the Sun tracked frame by frame, zenith, or a
 fixed l,m) with the rules of the Kotekan stage (charts_mvdr.tracking.run_tracking:
 blind local window, loading 10 x median eigenvalue by default, gains G^-1 R G^-H).
@@ -24,7 +25,7 @@ towards the Sun is compared with the power towards the mirrored direction in the
 --clean channels, and the larger one is used.
 
 Usage:
-    python 17_real_nulling.py --vis <vis.npz> --gains <gains.npy> --gain-antennas 0,5,32,37 \\
+    python 17_real_nulling.py --vis <vis.npz> --gains <gains_sun_*.npz> \\
         --positions <positions.npy> --look sun --interp-gains \\
         --rfi 362-380 415-428 400.5-402.5 --clean 381.5-399.5 403-414 --out <out_dir>
 """
@@ -36,7 +37,7 @@ import sys
 
 import numpy as np
 
-from charts_mvdr import tracking
+from charts_mvdr import real_io, tracking
 
 
 def parse_ranges(items):
@@ -113,8 +114,7 @@ def plot(path, freqs, ratio_db, wng_db, interp, rfi, clean, title):
 def build_parser():
     p = argparse.ArgumentParser(description="Nulling test of the stage algorithm on real covariances.")
     p.add_argument("--vis", required=True, help=".npz from 16_rfi_census.py extract.")
-    p.add_argument("--gains", default=None, help="Complex gains .npy (n_freq, n_ant).")
-    p.add_argument("--gain-antennas", default=None, help="Logical antennas of the gains columns, e.g. 0,5,32,37.")
+    real_io.add_gains_arguments(p, required=False)
     p.add_argument("--antennas", default=None, help="Antennas to use (default: --gain-antennas or all).")
     p.add_argument("--interp-gains", action="store_true", help="Interpolate gains over unsolved channels.")
     p.add_argument("--gain-edge", default="linear", choices=list(tracking.EDGE_MODES),
@@ -122,7 +122,8 @@ def build_parser():
     p.add_argument("--positions", required=True, help="Positions .npy (n, 3), ENU metres, logical order.")
     p.add_argument("--look", default="sun", help="'sun', 'zenith' or 'l,m'.")
     p.add_argument("--sign", default="auto", choices=["auto", "1", "-1"],
-                   help="Steering phase convention; -1 for real frames (charts-utils fringe model; measured on corr_1027).")
+                   help="Steering phase convention; -1 for real frames: cubes are handled in the "
+                        "version-1 convention of charts_mvdr.real_io (measured on corr_1027).")
     p.add_argument("--half-window", type=int, default=10)
     p.add_argument("--guard", type=int, default=1)
     p.add_argument("--loading", type=float, default=10.0, help="Loading in units of the reference eigenvalue.")
@@ -136,10 +137,17 @@ def build_parser():
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    z = np.load(args.vis)
-    vis, freqs, times = z["vis"], np.asarray(z["freqs"], float), np.asarray(z["times"], float)
-    cube_ants = [int(a) for a in z["ants"]]
-    gain_ants = [int(a) for a in args.gain_antennas.split(",")] if args.gain_antennas else None
+    z = real_io.read_cube(args.vis)
+    vis, freqs, times, cube_ants = z["vis"], z["freqs"], z["times"], z["ants"]
+    g_file, gain_ants, file_interp = None, None, None
+    if args.gains:
+        try:
+            g_file, gain_ants, file_interp = real_io.gains_from_args(args, n_freq=len(freqs))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    elif args.gain_antennas:
+        gain_ants = [int(a) for a in args.gain_antennas.split(",")]
     ants = ([int(a) for a in args.antennas.split(",")] if args.antennas else gain_ants or cube_ants)
     missing = [a for a in ants if a not in cube_ants or (gain_ants is not None and a not in gain_ants)]
     if missing:
@@ -149,17 +157,12 @@ def main(argv=None) -> int:
     vis = vis[np.ix_(idx, idx)]
 
     gains, interp = None, np.zeros((len(freqs), len(ants)), dtype=bool)
-    if args.gains:
-        if gain_ants is None:
-            print("error: --gains needs --gain-antennas", file=sys.stderr)
-            return 1
-        g = np.load(args.gains)
-        if g.ndim != 2 or g.shape[0] != len(freqs) or g.shape[1] != len(gain_ants):
-            print(f"error: gains {g.shape} do not match ({len(freqs)}, {len(gain_ants)})", file=sys.stderr)
-            return 1
-        g = g[:, [gain_ants.index(a) for a in ants]]
+    if g_file is not None:
+        cols = [gain_ants.index(a) for a in ants]
+        g, interp = g_file[:, cols], file_interp[:, cols].copy()
         if args.interp_gains:
-            g, interp = tracking.interpolate_gains(g, freqs, edge=args.gain_edge)
+            g, filled = tracking.interpolate_gains(g, freqs, edge=args.gain_edge)
+            interp |= filled
         gains = g
     interp_any = interp.any(axis=1)
 

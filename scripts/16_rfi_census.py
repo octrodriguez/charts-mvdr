@@ -41,6 +41,7 @@ import time
 
 import numpy as np
 
+from charts_mvdr import real_io
 from charts_mvdr import rfi_census as rc
 
 FRINGE_COLORS = {"source": "tab:green", "conjugate": "tab:olive", "stationary": "tab:red",
@@ -96,9 +97,11 @@ def cmd_extract(args) -> int:
                              stride=args.stride, chunk=args.chunk,
                              log=lambda m: print(m, flush=True))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    conv = real_io.loader_convention()
     np.savez(args.out, vis=vis, times=tsel, freqs=freqs, ants=np.array(ants),
-             stride=args.stride, input=os.path.abspath(args.input))
-    print(f"saved {args.out}: vis {vis.shape}", flush=True)
+             stride=args.stride, input=os.path.abspath(args.input), vis_convention=conv)
+    print(f"saved {args.out}: vis {vis.shape}, visibility convention {conv} "
+          f"(charts_mvdr.real_io)", flush=True)
     return 0
 
 

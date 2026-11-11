@@ -140,7 +140,7 @@ def test_expand_gains():
 def test_kotekan_gains_tool(site, tmp_path):
     d, run_dir, _ = site
     out = tmp_path / "full.npy"
-    res = run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36",
+    res = run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
               "--run-metadata", run_dir / "run_metadata_20261104T135502Z.json",
               "--interp-gains", "--out", out)
     assert res.returncode == 0, res.stderr
@@ -154,10 +154,10 @@ def test_kotekan_gains_tool(site, tmp_path):
     side = json.loads(out.with_suffix(".json").read_text())
     assert side["antennas"] == ANTS and "2 channels interpolated" in side["notes"]
     # without interpolation the flagged channels stay NaN; width mismatch is refused
-    res = run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36",
+    res = run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
               "--num-inputs", N_EL, "--out", tmp_path / "raw.npy")
     assert res.returncode == 0 and np.isnan(np.load(tmp_path / "raw.npy")[[3, 8]]).all()
-    res = run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32",
+    res = run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32", "--gains-format", "1",
               "--num-inputs", N_EL, "--out", tmp_path / "x.npy")
     assert res.returncode == 1
 
@@ -165,7 +165,7 @@ def test_kotekan_gains_tool(site, tmp_path):
 def prepare(site, tmp_path, first=0, count=T, extra=()):
     d, run_dir, _ = site
     full = tmp_path / "full.npy"
-    assert run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36",
+    assert run(TOOL, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
                "--num-inputs", N_EL, "--interp-gains", "--out", full).returncode == 0
     out = tmp_path / "prep"
     res = run(S18, "prepare", "--input", run_dir, "--first", first, "--count", count,
@@ -264,7 +264,7 @@ def run_17(site, out, sign, tag, look=LOOK):
     cube = out / "vis_window.npz"
     if not cube.exists():
         charts_utils_cube(out, freqs, cube)
-    res = run(S17, "--vis", cube, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36",
+    res = run(S17, "--vis", cube, "--gains", d / "gains_sol.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
               "--interp-gains", "--positions", d / "positions.npy", "--look", f"{look[0]},{look[1]}",
               "--sign", sign, "--clean", f"{F0}-{F0 + 4}", "--half-window", 8, "--guard", 1,
               "--loading", 0.1, "--loading-ref", "median", "--out", out / tag)

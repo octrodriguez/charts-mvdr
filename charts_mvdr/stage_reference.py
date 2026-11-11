@@ -62,8 +62,10 @@ def element_to_antenna(n: int, antenna_order: str = "descending") -> np.ndarray:
 def load_gains(path, channels=None, n_ant: int | None = None) -> np.ndarray:
     """Read a gains file (n_freq, n_ant) complex .npy, optionally for some channels.
 
-    The file follows the charts-utils convention; the voltage-domain gains
-    conj(g) are returned (see the module docstring), as the Kotekan loader does.
+    The file is a Kotekan gains file (gains format version 1 of charts_mvdr.real_io,
+    written by tools/kotekan_gains.py or tools/apply_test_gains.py); the
+    voltage-domain gains conj(g) are returned (see the module docstring), as the
+    Kotekan loader does.
     Accepts complex64 or complex128 (returned as complex128). Time-resolved
     solutions (n_freq, n_ant, n_time) are rejected: average them first
     (cal_pipeline_gpu --save-avg-gains).

@@ -45,7 +45,8 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-Tested against `charts-utils` commit `4ab71ed` (2026-10-19).
+Works with `charts-utils` `4ab71ed` (2026-10-19) and `cf567b1` (2026-11-09, gains format 2):
+see *Conventions* for the two generations of cubes and gains files.
 `charts_constants` is resolved from site-packages (pip install from GitHub).
 
 ### Kotekan (optional, full tier)
@@ -106,6 +107,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   fringes.py                    # coherence with a geometric fringe model: baseline fit, channel classification
   rfi_census.py                 # RFI census of autocorrelations: spectral peaks, occupancy, classes, fringe crossing
   tracking.py                   # stage rules with a moving look direction on real covariances; gain interpolation, sidecar
+  real_io.py                    # cubes and gains files of both charts-utils generations, converted on load; shared --gains options
   stage_reference.py            # NumPy reference of the Kotekan MVDR stage (blind local covariance window, gains)
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
@@ -232,10 +234,12 @@ python scripts/16_rfi_census.py census --vis <vis.npz> --fringe <fringe_coherenc
 # start bins of charts_constants.CHAIN_BANDS); the census runs on A / g^2.
 
 # Nulling test on real covariances (stage rules, look direction tracked frame by frame)
-python scripts/17_real_nulling.py --vis <vis.npz> --gains <gains.npy> --gain-antennas <a,b,c> \
+python scripts/17_real_nulling.py --vis <vis.npz> --gains <gains_sun_*.npz> \
     --positions <positions.npy> --look sun --interp-gains --rfi <MHz ranges> --clean <MHz ranges> --out <out_dir> \
     [--sign -1 --loading-ref min --loading 0.1]
-# Real frames need --sign -1 (see Conventions). Gains outside the solved range keep the fitted
+# --gains: the charts-utils gain file (.npz); a bare .npy needs --gain-antennas <a,b,c> and
+# --gains-format 1|2 (see Conventions). The same options in 19, 20, fig_phase2d_nulling.py and
+# kotekan_gains.py. Real frames need --sign -1. Gains outside the solved range keep the fitted
 # delay (--gain-edge linear, default). With few antennas use
 # --loading-ref min: interference lifts the median eigenvalue and MVDR collapses to DFT.
 python tools/fig_real_nulling.py "<label>=<run_a>/real_nulling.npz" "<label>=<run_b>/real_nulling.npz" \
@@ -255,7 +259,7 @@ sbatch --export=ALL,KOTEKAN_SRC=<kotekan_worktree>,WINDOW_DIR=<window_dir>,BEAMS
 # Kotekan MVDR stage on real correlation frames (CPU-only build is enough), checked against
 # 17_real_nulling.py on the same frames. The stage needs a full-width gains file: a file with
 # one column per calibrated antenna would be mapped onto a fixed antenna set.
-python tools/kotekan_gains.py --gains <solution.npy> --gain-antennas <a,b,c> \
+python tools/kotekan_gains.py --gains <gains_sun_*.npz> \
     --run-metadata <run_dir>/run_metadata_<id>.json --interp-gains --out <gains_full.npy>
 python scripts/18_kotekan_real_mvdr.py prepare --input <run_dir> --first <frame> --count <n> \
     --gains <gains_full.npy> --positions <positions.npy> --beams <l,m> [<l,m> ...] \
@@ -263,18 +267,18 @@ python scripts/18_kotekan_real_mvdr.py prepare --input <run_dir> --first <frame>
 # run the printed Kotekan command per block from the Kotekan source tree, then:
 python scripts/16_rfi_census.py extract --input <out_dir>/window --antennas <a,b,c> --stride 1 \
     --out <out_dir>/vis_window.npz
-python scripts/17_real_nulling.py --vis <out_dir>/vis_window.npz --gains <solution.npy> \
-    --gain-antennas <a,b,c> --interp-gains --positions <positions.npy> --look <l,m> --sign auto \
+python scripts/17_real_nulling.py --vis <out_dir>/vis_window.npz --gains <gains_sun_*.npz> \
+    --interp-gains --positions <positions.npy> --look <l,m> --sign auto \
     --clean <MHz ranges> --half-window 40 --loading 0.1 --out <out_dir>/nulling
 python scripts/18_kotekan_real_mvdr.py compare --prepared <out_dir> --nulling <out_dir>/nulling --beam 0
 
 # Does the sky come back after nulling? Fringes of the Sun in an RFI band, against the model
 # filtered the same way (2-D phase figure by default); per-antenna power and voltage matrices.
-python scripts/19_fringe_recovery.py --vis <cube.npz> --gains <solution.npy> --gain-antennas <a,b,c> \
+python scripts/19_fringe_recovery.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --positions <positions.npy> --filter mvdr --bands <rfi MHz> <clean MHz> --examples <MHz> --out <prefix>
-python scripts/20_nulling_gains.py --vis <cube.npz> --gains <solution.npy> --gain-antennas <a,b,c> \
+python scripts/20_nulling_gains.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --auto 2 --rfi <MHz ranges> --out <prefix>
-python tools/fig_phase2d_nulling.py --vis <cube.npz> --gains <solution.npy> --gain-antennas <a,b,c> \
+python tools/fig_phase2d_nulling.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --pairs <a,b> --zoom <MHz> --null-bands <MHz> --demean --out <png>
 
 # Figures from the Kotekan stage: beam response of the applied weights (07 --stage-npz, then
@@ -344,12 +348,23 @@ excluded via `.gitignore`.
   need conjugated steering vectors (`sign = -1`, `--sign -1` in 17); the raw voltages
   follow the simulator sign. For a single east-west row this equals a sign error in x,
   so check the positions file first.
-- Gains files follow charts-utils (`x_obs = g x`), so the voltage-domain gain is
-  `conj(g)`. Code that works on charts-utils cubes uses `g` (`tracking.run_tracking`,
+- Gains files of that generation follow `x_obs = g x`, so the voltage-domain gain is
+  `conj(g)`. Code that works on such cubes uses `g` (`tracking.run_tracking`,
   17); code that works on Kotekan voltages or correlations uses `conj(g)`
   (`stage_reference.load_gains`, the Kotekan loader `chartsMvdr::load_gains_npy`).
   Verified on the 2026-10-27 Sun transit: the tracker beam is coherent only with
   measured ENU positions and `conj(g)`.
+- Two generations of charts-utils products (`charts_mvdr/real_io.py`). Version 1 (up to
+  `4ab71ed`): the two items above. Version 2 (gains `format_version` 2, `cf567b1`): the
+  readers conjugate the stored product, `V_ab = v_a conj(v_b)` with the simulator sign,
+  and gain files (`.npz`) hold the voltage gains. A version-2 cube or gains array is the
+  conjugate of the version-1 one; dividing a cube by `g_a conj(g_b)` is valid within one
+  version only. charts-mvdr works in version 1 internally and converts on load:
+  `16 extract` stores `vis_convention` in the cube (cubes without it are version 1), a
+  `.npz` gain file carries its version, and a bare `.npy` needs `--gains-format 1|2`
+  (or `format_version` in its sidecar). So `--sign -1` holds for real cubes of both
+  generations, and old and new files can be mixed. Kotekan gains files
+  (`tools/kotekan_gains.py`) are always version 1, because the Kotekan loader conjugates.
 - Antenna positions: logical antenna order, ENU metres. The design layout is the
   charts-utils default grid (`default_charts_antenna_positions`: eight antennas per
   east-west row, 0.6 m spacing, index increasing west then north; 4.2 m x 4.2 m for

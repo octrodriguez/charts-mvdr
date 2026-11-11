@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Full-width gains file for the Kotekan consumers from a calibration solution.
 
-cal_pipeline_gpu (charts-utils, --save-avg-gains) writes one column per calibrated
-antenna, (n_freq, n_cols). The Kotekan loaders (chartsMvdr::load_gains_npy, used by
+cal_pipeline_gpu (charts-utils) writes one column per calibrated antenna, (n_freq, n_cols):
+a .npz gain file (antennas and format version inside) or, before gains format 2, a bare
+.npy (--gain-antennas and --gains-format 1). The Kotekan loaders (chartsMvdr::load_gains_npy, used by
 chartsMVDRBeams and cudaDirectBeamTracker) expect one column per correlator input,
 (n_freq, n_inputs); a file with fewer columns is only accepted with an explicit antenna
 subset, and chartsMVDRBeams passes none (a 4-column file is mapped onto a fixed antenna
@@ -18,15 +19,17 @@ stay NaN and the consumers drop every antenna in them.
 
 The width is --num-inputs, or array.n_antennas of a run metadata file (--run-metadata),
 i.e. the number of signal inputs of the correlator: one column per input, whatever the
-number of antennas or polarizations behind them. Values keep the charts-utils convention
-(x_obs = g x); the Kotekan loaders conjugate them to voltage-domain gains.
+number of antennas or polarizations behind them. The Kotekan loaders conjugate what they
+read to obtain the voltage-domain gains, so the output always holds the conjugate of the
+voltage gains (gains format version 1 of charts_mvdr.real_io), whatever the version of the
+input: a format-2 gain file is conjugated here. The sidecar records format_version 1.
 
 Writes OUT (complex64) and OUT with suffix .json: the sidecar of the gains format, with
 the keys of the source sidecar when one exists next to --gains, plus notes on the
 expansion and the interpolated channels.
 
 Example:
-  python tools/kotekan_gains.py --gains gains.npy --gain-antennas 0,4,32,36 \\
+  python tools/kotekan_gains.py --gains gains_sun_<start>_<stop>.npz \\
       --run-metadata run_metadata.json --interp-gains --out gains_full.npy
 """
 from __future__ import annotations
@@ -38,15 +41,13 @@ from pathlib import Path
 
 import numpy as np
 
-from charts_mvdr import tracking
+from charts_mvdr import real_io, tracking
 
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--gains", required=True, type=Path, help="Solution (n_freq, n_cols) .npy.")
-    ap.add_argument("--gain-antennas", required=True,
-                    help="Logical input of each column of --gains, e.g. 0,4,32,36.")
+    real_io.add_gains_arguments(ap)
     width = ap.add_mutually_exclusive_group(required=True)
     width.add_argument("--num-inputs", type=int, help="Correlator signal inputs (file width).")
     width.add_argument("--run-metadata", type=Path,
@@ -68,17 +69,15 @@ def num_inputs_from_metadata(path: Path) -> int:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    g = np.load(args.gains)
-    cols = [int(a) for a in args.gain_antennas.split(",")]
+    args.gains = Path(args.gains)
     n_inputs = args.num_inputs if args.num_inputs else num_inputs_from_metadata(args.run_metadata)
-    if g.ndim != 2 or not np.iscomplexobj(g):
-        print(f"error: {args.gains}: expected a complex (n_freq, n_cols) array, got "
-              f"{g.dtype} {g.shape}", file=sys.stderr)
+    try:
+        g, cols, file_interp = real_io.gains_from_args(args)
+        version = real_io.read_gains(args.gains, fmt=args.gains_format, key=args.gains_key).convention
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
-    if g.shape[1] != len(cols):
-        print(f"error: {args.gains} has {g.shape[1]} columns, --gain-antennas lists "
-              f"{len(cols)}", file=sys.stderr)
-        return 1
+    solved = np.isfinite(g).all(axis=1) & ~file_interp.any(axis=1)
 
     interp = np.zeros(g.shape, dtype=bool)
     if args.interp_gains:
@@ -101,12 +100,15 @@ def main(argv=None) -> int:
         doc = json.loads(src_sidecar.read_text())
         meta = {k: doc.get(k) for k in tracking.SIDECAR_KEYS if k in doc}
     meta["antennas"] = cols
-    solved = np.isfinite(np.load(args.gains)).all(axis=1)
+    meta["format_version"] = real_io.INTERNAL_CONVENTION
     note = (f"expanded by tools/kotekan_gains.py from {args.gains.name} "
-            f"({g.shape[1]} columns) to {n_inputs} inputs, NaN outside {cols}; "
+            f"(gains format {version}, {g.shape[1]} columns) to {n_inputs} inputs, NaN outside "
+            f"{cols}; holds the conjugate of the voltage gains, as the Kotekan loaders expect; "
             f"{int(solved.sum())} of {g.shape[0]} channels solved in all antennas")
+    if file_interp.any():
+        note += f"; {int(file_interp.any(axis=1).sum())} channels interpolated by the calibration"
     if args.interp_gains:
-        note += (f"; {int(interp.any(axis=1).sum())} channels interpolated "
+        note += (f"; {int(interp.any(axis=1).sum())} channels interpolated here "
                  f"(gain edge {args.gain_edge})")
     meta["notes"] = note
     side = tracking.write_sidecar(args.out, **meta)

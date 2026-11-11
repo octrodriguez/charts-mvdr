@@ -23,7 +23,7 @@ import sys
 
 import numpy as np
 
-from charts_mvdr import nulling
+from charts_mvdr import nulling, real_io
 
 
 def rng(s):
@@ -34,8 +34,7 @@ def rng(s):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vis", required=True)
-    ap.add_argument("--gains", required=True)
-    ap.add_argument("--gain-antennas", required=True)
+    real_io.add_gains_arguments(ap)
     ap.add_argument("--pairs", nargs="+", required=True, help="Pairs a,b of logical antennas.")
     ap.add_argument("--zoom", default=None, help="Frequency range [MHz] shown.")
     ap.add_argument("--null-bands", nargs="+", required=True)
@@ -44,9 +43,13 @@ def main(argv=None) -> int:
     ap.add_argument("--demean", action="store_true")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
-    ants = [int(x) for x in a.gain_antennas.split(",")]
-    V, freqs, times, _ = nulling.load_cube(a.vis, ants)
-    Vc, ok = nulling.calibrate(V, np.load(a.gains), freqs)
+    try:
+        g, ants, _ = real_io.gains_from_args(a)
+        V, freqs, times, _ = nulling.load_cube(a.vis, ants)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    Vc, ok = nulling.calibrate(V, g, freqs)
     sel = np.ones(len(freqs), bool) if a.zoom is None else (freqs >= rng(a.zoom)[0]) & (freqs <= rng(a.zoom)[1])
     bands = [rng(b) for b in a.null_bands]
     Vn = Vc.copy()

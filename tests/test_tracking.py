@@ -135,7 +135,7 @@ def test_script_end_to_end(tmp_path):
     pos[[0, 5, 32, 37], 0] = X
     np.save(tmp_path / "pos.npy", pos)
     r = subprocess.run([sys.executable, str(SCRIPT), "--vis", str(tmp_path / "vis.npz"), "--gains", str(tmp_path / "gains.npy"),
-                        "--gain-antennas", "0,5,32,37", "--positions", str(tmp_path / "pos.npy"), "--look", "0.22,0.3",
+                        "--gain-antennas", "0,5,32,37", "--gains-format", "1", "--positions", str(tmp_path / "pos.npy"), "--look", "0.22,0.3",
                         "--interp-gains", "--rfi", "398-410", "--clean", "378-397", "--out", str(tmp_path / "out")],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -147,7 +147,7 @@ def test_script_end_to_end(tmp_path):
     assert np.all(np.abs(pm[4:] - pm[:4].mean()) < 0.3)  # interpolated gains: interferer removed
     assert (tmp_path / "out" / "real_nulling.png").exists()
     bad = subprocess.run([sys.executable, str(SCRIPT), "--vis", str(tmp_path / "vis.npz"), "--gains", str(tmp_path / "gains.npy"),
-                          "--positions", str(tmp_path / "pos.npy"), "--out", str(tmp_path / "x")], capture_output=True, text=True)
+                          "--gains-format", "1", "--positions", str(tmp_path / "pos.npy"), "--out", str(tmp_path / "x")], capture_output=True, text=True)
     assert bad.returncode == 1 and "--gain-antennas" in bad.stderr
 
 

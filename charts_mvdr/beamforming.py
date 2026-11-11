@@ -6,7 +6,9 @@ correlator, R_ij = sum_t v_i v_j^*): a plane wave from direction cosines
 
     a_n(l, m) = exp(-j 2 pi f (l x_n + m y_n) / c).
 
-Real CHARTS data follow the opposite sign. charts-utils models the raw phase of
+Real CHARTS cubes are handled in the version-1 convention of charts_mvdr.real_io
+(charts-utils before gains format 2; newer cubes are conjugated on load), which
+follows the opposite sign. That charts-utils modelled the raw phase of
 V_ab = x_a x_b^* as -2 pi f (tau_a - tau_b) with tau_n = -s.r_n / c
 (cal.coordinates.geometric_visibility_phase), i.e. x_n ~ exp(+j 2 pi f s.r_n / c):
 the antenna closer to the source receives the wavefront first. That model fits

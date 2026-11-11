@@ -129,7 +129,7 @@ def summary(stdout, band):
 
 def test_fringe_recovery_projection_and_mvdr(cube, tmp_path):
     d = cube
-    common = ["--vis", d / "cube.npz", "--gains", d / "gains.npy", "--gain-antennas", "0,4,32,36",
+    common = ["--vis", d / "cube.npz", "--gains", d / "gains.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
               "--positions", d / "pos.npy", "--bands", "357-380", "410-428", "381.5-399.5",
               "--examples", "390", "370"]
     res = run(S19, *common, "--filter", "project", "--k", "auto", "--out", tmp_path / "proj")
@@ -153,7 +153,7 @@ def test_fringe_recovery_projection_and_mvdr(cube, tmp_path):
 
 def test_nulling_gains_auto(cube, tmp_path):
     d = cube
-    res = run(S20, "--vis", d / "cube.npz", "--gains", d / "gains.npy", "--gain-antennas", "0,4,32,36",
+    res = run(S20, "--vis", d / "cube.npz", "--gains", d / "gains.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
               "--auto", 2, "--rfi", "357-380", "410-428", "--out", tmp_path / "ng")
     assert res.returncode == 0, res.stderr
     clean = next(l for l in res.stdout.splitlines() if l.startswith("381.5-399.5"))
@@ -168,7 +168,7 @@ def test_nulling_gains_auto(cube, tmp_path):
 
 def test_figure_tools(cube, tmp_path):
     d = cube
-    res = run(PH2D, "--vis", d / "cube.npz", "--gains", d / "gains.npy", "--gain-antennas", "0,4,32,36",
+    res = run(PH2D, "--vis", d / "cube.npz", "--gains", d / "gains.npy", "--gain-antennas", "0,4,32,36", "--gains-format", "1",
               "--pairs", "0,4", "0,32", "--zoom", "345-395", "--null-bands", "357-380", "--demean",
               "--out", tmp_path / "ph.png")
     assert res.returncode == 0, res.stderr

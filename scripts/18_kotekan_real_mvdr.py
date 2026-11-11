@@ -337,6 +337,10 @@ def cmd_prepare(args) -> int:
                                 args.delta_freq_mhz)
     df = float(freqs[1] - freqs[0])
 
+    if str(args.gains).endswith(".npz"):
+        print(f"error: {args.gains} is a charts-utils gain file; chartsMVDRBeams reads a "
+              "full-width .npy. Write it with tools/kotekan_gains.py.", file=sys.stderr)
+        return 1
     gains = np.load(args.gains)
     if gains.ndim != 2 or gains.shape[1] != n_el:
         print(f"error: {args.gains} has shape {gains.shape}; chartsMVDRBeams needs one column "

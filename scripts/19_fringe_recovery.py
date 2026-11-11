@@ -34,14 +34,13 @@ from pathlib import Path
 
 import numpy as np
 
-from charts_mvdr import nulling
+from charts_mvdr import nulling, real_io
 
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vis", required=True, help="Cube from 16_rfi_census.py extract.")
-    ap.add_argument("--gains", required=True, help="charts-utils gains, one column per --gain-antennas.")
-    ap.add_argument("--gain-antennas", required=True)
+    real_io.add_gains_arguments(ap)
     ap.add_argument("--positions", required=True, help="Positions .npy (n, 3), ENU m, logical order.")
     ap.add_argument("--filter", default="mvdr", choices=("mvdr", "project"))
     ap.add_argument("--loading", type=float, default=0.1)
@@ -63,14 +62,16 @@ def rng(s):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    ants = [int(a) for a in args.gain_antennas.split(",")]
     if args.filter == "project" and args.k != "auto" and not args.k.isdigit():
         print("error: --k must be an integer or 'auto'", file=sys.stderr)
         return 1
-    V, freqs, times, look = nulling.load_cube(args.vis, ants)
-    g = np.load(args.gains)
-    if g.shape != (len(freqs), len(ants)):
-        print(f"error: gains {g.shape} do not match ({len(freqs)}, {len(ants)})", file=sys.stderr)
+    try:
+        g, ants, _ = real_io.gains_from_args(args)
+        V, freqs, times, look = nulling.load_cube(args.vis, ants)
+        if g.shape[0] != len(freqs):
+            raise ValueError(f"gains have {g.shape[0]} channels, the cube {len(freqs)}")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     Vc, ok = nulling.calibrate(V, g, freqs)
     pos = np.load(args.positions)

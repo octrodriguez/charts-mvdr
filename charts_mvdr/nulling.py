@@ -1,9 +1,11 @@
 """Interference nulling on real visibility cubes and Sun fringe recovery.
 
-A covariance cube saved by 16_rfi_census.py extract holds the charts-utils visibilities
-V_ab = x_a conj(x_b) (x = conj(v), so V = conj(R) with R = v v^H in the raw-voltage
-convention). The functions here are written for any Hermitian covariance; the callers keep
-track of the domain.
+Cubes and gains are handled in the version-1 convention of charts_mvdr.real_io (the
+charts-utils products before gains format 2): V_ab = x_a conj(x_b) with x = conj(v), so
+V = conj(R) with R = v v^H in the raw-voltage convention, and file gains g = conj(g_v).
+`load_cube` and real_io.read_gains convert version-2 products (charts-utils with gains
+format 2: V = R, voltage gains) on load. The functions here are written for any Hermitian
+covariance; the callers keep track of the domain.
 
 - `load_cube` / `calibrate`: read a cube for a set of antennas and divide by the gains of a
   charts-utils gains file (V_ab / (g_a conj(g_b))).
@@ -27,27 +29,27 @@ from __future__ import annotations
 
 import numpy as np
 
-from charts_mvdr import tracking
+from charts_mvdr import real_io, tracking
 from charts_mvdr.beamforming import steering_vectors
 
 LOADING_REFS = ("median", "min")
 
 
 def load_cube(path, antennas):
-    """(V (n_frames, n_chan, n, n) complex128, freqs MHz, times, look or None) for antennas.
+    """(V (n_frames, n_chan, n, n) complex128, freqs MHz, times, look or None) for antennas,
+    in the version-1 convention whatever the version of the cube (real_io.read_cube).
 
     look is the cube's own (n_frames, 2) direction array when present (synthetic tests);
     otherwise None and the caller computes the Sun's direction.
     """
-    z = np.load(path)
-    cube_ants = [int(a) for a in z["ants"]]
+    z = real_io.read_cube(path)
+    cube_ants = z["ants"]
     missing = [a for a in antennas if a not in cube_ants]
     if missing:
         raise ValueError(f"antennas {missing} not in the cube {cube_ants}")
     idx = [cube_ants.index(a) for a in antennas]
     V = np.moveaxis(z["vis"][np.ix_(idx, idx)], (3, 2), (0, 1)).astype(np.complex128)
-    look = np.asarray(z["look"], float) if "look" in z.files else None
-    return V, np.asarray(z["freqs"], float), np.asarray(z["times"], float), look
+    return V, z["freqs"], z["times"], z["look"]
 
 
 def calibrate(V, gains, freqs_mhz, interp=True, edge="linear"):

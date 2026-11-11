@@ -2,8 +2,9 @@
 """Per-antenna power before and after nulling interference eigenmodes (BURSTT-style figure),
 and the matrices to apply to raw voltages.
 
-Voltage domain: R = v v^H = conj(V) for a cube V saved by 16_rfi_census.py extract;
-calibrated voltages v_cal = G^-1 v, G = diag(conj(g)) for charts-utils gains g. Per channel,
+Voltage domain: R = v v^H = conj(V) and voltage gains G = diag(conj(g)) for a cube V and
+gains g in the version-1 convention of charts_mvdr.real_io (cubes and gain files of either
+charts-utils generation are converted on load); calibrated voltages v_cal = G^-1 v. Per channel,
 on the time-averaged calibrated covariance, the interference eigenmodes of the
 noise-whitened matrix are removed (charts_mvdr.nulling.whitened_projector), k = 1 and k = 2
 ("nulling-1", "nulling-2"); with --auto T only modes whose eigenvalue exceeds T times the
@@ -30,14 +31,13 @@ from pathlib import Path
 
 import numpy as np
 
-from charts_mvdr import nulling
+from charts_mvdr import nulling, real_io
 
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vis", required=True)
-    ap.add_argument("--gains", required=True)
-    ap.add_argument("--gain-antennas", required=True)
+    real_io.add_gains_arguments(ap)
     ap.add_argument("--ref", default="381.5-399.5", help="Clean band [MHz] for the dB reference.")
     ap.add_argument("--rfi", nargs="*", default=[], help="MHz ranges shaded and summarized.")
     ap.add_argument("--auto", type=float, default=0.0,
@@ -54,11 +54,13 @@ def rng(s):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    ants = [int(a) for a in args.gain_antennas.split(",")]
-    V, freqs, _, _ = nulling.load_cube(args.vis, ants)
-    g = np.load(args.gains)
-    if g.shape != (len(freqs), len(ants)):
-        print(f"error: gains {g.shape} do not match ({len(freqs)}, {len(ants)})", file=sys.stderr)
+    try:
+        g, ants, _ = real_io.gains_from_args(args)
+        V, freqs, _, _ = nulling.load_cube(args.vis, ants)
+        if g.shape[0] != len(freqs):
+            raise ValueError(f"gains have {g.shape[0]} channels, the cube {len(freqs)}")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     Vc, ok = nulling.calibrate(V, g, freqs)
     from charts_mvdr import tracking
@@ -83,7 +85,8 @@ def main(argv=None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(f"{out}.npz", freqs=freqs, ants=np.array(ants), M=M, k_used=k_used,
-                        note="v' = M[k-1, c] @ v on raw voltages, logical antenna order; M = P_k G^-1, G = diag(conj(g))")
+                        note="v' = M[k-1, c] @ v on raw voltages, logical antenna order; M = P_k G^-1, "
+                             "G = diag of the voltage gains (format-2 gains; conj of format-1 gains)")
     plot(out, freqs, pw, ants, args)
     r0, r1 = rng(args.ref)
     for b in args.rfi + [args.ref]:

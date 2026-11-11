@@ -31,7 +31,8 @@ from .beamforming import steering_vectors
 from .stage_reference import window_indices
 
 SIDECAR_KEYS = ("created_utc", "valid_from_utc", "valid_to_utc", "calibrator", "ref_ant",
-                "antennas", "positions_file", "fengine_gains", "charts_utils_commit")
+                "antennas", "positions_file", "fengine_gains", "charts_utils_commit",
+                "format_version")
 
 
 EDGE_MODES = ("linear", "nearest", "nan")
@@ -135,13 +136,13 @@ def run_tracking(vis, freqs_hz, pos_x, pos_y, look_lm, gains=None, half_window: 
                  loading_ref: str = "median"):
     """DFT and MVDR beam power with one look direction per frame.
 
-    vis: (n_ant, n_ant, n_chan, n_frames) covariances (V_ab = x_a x_b^*, as
-    charts-utils readers); look_lm: (n_frames, 2) direction cosines (east,
-    north); gains: (n_chan, n_ant) or None, charts-utils convention, used as is
-    on these cubes (x_obs = g x); channels with a non-finite gain in
-    any antenna are skipped (NaN). sign = -1 uses conjugated steering vectors
-    (the other phase convention; the one measured on real CHARTS data read with
-    charts-utils, corr_1027). loading_ref: see batched_mvdr.
+    vis: (n_ant, n_ant, n_chan, n_frames) covariances; look_lm: (n_frames, 2)
+    direction cosines (east, north); gains: (n_chan, n_ant) or None, of the same
+    convention as the cube (V_ab / (g_a conj(g_b))); channels with a non-finite
+    gain in any antenna are skipped (NaN). sign = -1 uses conjugated steering
+    vectors: the convention of real cubes and gains as returned by
+    charts_mvdr.real_io (version 1: V = conj(v v^H); measured on corr_1027).
+    loading_ref: see batched_mvdr.
     Returns dict with power (2, n_frames, n_chan)
     [dft, mvdr], wng (n_frames, n_chan) in linear units, n_window (n_frames,).
     """
