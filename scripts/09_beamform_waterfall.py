@@ -11,6 +11,9 @@ then averaged in bins of --tbin samples. Weights:
   kl_local   MVDR / KL with F from the off-pulse frames within --local-s of the
              burst arrival in that channel (excluding on frames and a guard)
   kl_global  MVDR / KL with F from the frames outside the whole burst window
+  kl_range   MVDR / KL with F from the frames inside --train-range T0 T1 (window
+             seconds), excluding on frames and a guard: weights trained at a
+             chosen time, e.g. before or after a change of the interference
 KL weights use diagonal loading --loading in units of the noise floor of F.
 
 Per channel the power is normalized with the off-local bins of that channel,
@@ -23,10 +26,12 @@ Outputs:
                     mean removed per channel, divided by the median off-pulse std,
                     so channels with excess fluctuations stand out)
   channel_snr.png   per-channel S/N for each beam and the KL / DFT ratio
-  waterfall.npz     per-channel S/N, dedispersed series and S/N, flags, and
-                    (with --save-waterfall) the binned power
+  waterfall.npz     per-channel S/N, dedispersed series and S/N, flags, the burst
+                    parameters of the events file, and (with --save-waterfall) the
+                    binned power (input of tools/waterfall_to_fitburst.py)
 Channels whose leading tail is cut by the simulator (event start inside the
-pulse) or without off-local frames are flagged and left out of the sums.
+pulse), without off-local frames or (with kl_range) without training frames are
+flagged and left out of the sums.
 
 The per-bin noise is assumed independent between bins and channels (true for
 the receiver noise; residual RFI breaks it). For a paired run on a window
@@ -79,7 +84,9 @@ def main() -> None:
                     metavar=("DL", "DM"))
     ap.add_argument("--event-id", default=None)
     ap.add_argument("--weights", nargs="+", default=["dft", "kl_local", "kl_global"],
-                    choices=["dft", "kl_local", "kl_global"])
+                    choices=["dft", "kl_local", "kl_global", "kl_range"])
+    ap.add_argument("--train-range", type=float, nargs=2, default=None, metavar=("T0", "T1"),
+                    help="window time [s] of the frames that train the kl_range weights")
     ap.add_argument("--loading", type=float, default=10.0,
                     help="KL diagonal loading in units of the noise floor of F")
     ap.add_argument("--n-sigma", type=float, default=3.0)
@@ -98,6 +105,8 @@ def main() -> None:
     args = ap.parse_args()
     if args.samples % args.tbin:
         raise SystemExit("--tbin must divide --samples")
+    if ("kl_range" in args.weights) != (args.train_range is not None):
+        raise SystemExit("--train-range and the kl_range weights go together")
 
     meta = load_window_dir_meta(args.window_dir)
     if "frame_time_s" not in meta:
@@ -136,25 +145,41 @@ def main() -> None:
     on = (tt <= t_arr + half) & (tt + frame_s >= t_arr - half)
     local = (np.abs(tt + frame_s / 2 - t_arr) <= args.local_s) & ~dilate(on, args.guard_frames)
     glob = (times + frame_s < t_top - half) | (times > t_top + sweep + half)
+    train = np.zeros_like(on)
+    if args.train_range is not None:
+        t0_tr, t1_tr = args.train_range
+        in_rng = (times >= t0_tr) & (times + frame_s <= t1_tr + 1e-9)
+        train = in_rng[:, None] & ~dilate(on, args.guard_frames)
 
     # Weights covariances, streamed over the dumps
     F_loc = np.zeros((ch.size, N, N), dtype=np.complex128)
     F_glob = np.zeros((ch.size, N, N), dtype=np.complex128)
+    F_rng = np.zeros((ch.size, N, N), dtype=np.complex128)
     for i, k in enumerate(idx):
-        if not (local[i].any() or glob[i]):
+        if not (local[i].any() or glob[i] or train[i].any()):
             continue
         R = read_astron_correlation(dumps[k], nf, N)[ch] / args.samples
         if glob[i]:
             F_glob += R
         F_loc[local[i]] += R[local[i]]
+        F_rng[train[i]] += R[train[i]]
     n_loc = local.sum(0)
+    n_rng = train.sum(0)
     F_loc /= np.maximum(n_loc, 1)[:, None, None]
+    F_rng /= np.maximum(n_rng, 1)[:, None, None]
+    if args.train_range is not None:
+        if not n_rng.any():
+            raise SystemExit(f"no off-pulse frames inside --train-range {t0_tr:g} {t1_tr:g}")
+        print(f"kl_range: {int(n_rng.max())} training frames in {t0_tr:g}-{t1_tr:g} s "
+              f"(channels without any: {int(np.sum(n_rng == 0))})")
     F_glob /= max(int(glob.sum()), 1)
 
     frame0 = np.floor(t_top / frame_s) * frame_s
     flag = np.zeros(ch.size, bool)
     flag |= t_arr - half < frame0                       # leading tail cut by the simulator
     flag |= n_loc == 0
+    if args.train_range is not None:
+        flag |= n_rng == 0
     flag |= np.isin(ch, args.flag_channels)
     W = {}
     for name in args.weights:
@@ -164,9 +189,10 @@ def main() -> None:
             if name == "dft":
                 Wn[c] = dft_weights(d)[0]
             else:
-                F = F_loc[c] if name == "kl_local" else F_glob[c]
+                F, n_F = {"kl_local": (F_loc[c], n_loc[c]), "kl_global": (F_glob[c], 1),
+                          "kl_range": (F_rng[c], n_rng[c])}[name]
                 Wn[c] = (mvdr_weights(F, d, loading=args.loading, loading_ref="noise")[0]
-                         if (name != "kl_local" or n_loc[c]) else dft_weights(d)[0])
+                         if n_F else dft_weights(d)[0])
         W[name] = Wn.conj().astype(np.complex64)
 
     # Time grid covering the off-local and on frames of every channel
@@ -250,7 +276,10 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     save = {"channels": ch, "freq_mhz": fmhz[ch], "flag": flag, "look": np.array(look),
             "steer": np.array(steer), "dm": dm, "width_s": w_s, "t_top": t_top,
-            "loading": args.loading, "t_bin": t_bin, "beams": np.array(list(W))}
+            "loading": args.loading, "t_bin": t_bin, "bin_s": bin_s, "amp": burst["amp"],
+            "f_top": f_top,
+            "beams": np.array(list(W)),
+            "train_range": np.array(args.train_range if args.train_range else [np.nan] * 2)}
     for n, r in res.items():
         save[f"{n}_snr_ch"], save[f"{n}_series"] = r["snr_ch"], r["series"]
         save[f"{n}_dd_snr"] = r["dd_snr"]

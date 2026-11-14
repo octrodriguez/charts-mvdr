@@ -87,7 +87,8 @@ def test_burst_from_events():
           {"event_id": "b2", "event_type": "frb", "dm": 9.0, "pulse_width_ms": 1.0,
            "t_start_s": 2.0, "l0": 0.0, "m0": 0.0}]
     b = burst_from_events(ev)
-    assert b == {"id": "b1", "dm": 5.0, "width_s": 0.002, "t_top_s": 1.0, "l": -0.1, "m": 0.25}
+    assert b == {"id": "b1", "dm": 5.0, "width_s": 0.002, "t_top_s": 1.0, "l": -0.1, "m": 0.25,
+                 "amp": 3.0}
     assert burst_from_events(ev, "b2")["dm"] == 9.0
     with pytest.raises(ValueError):
         burst_from_events(ev, "x")

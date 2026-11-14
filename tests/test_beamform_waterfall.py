@@ -18,9 +18,11 @@ T, N = 256, 16
 FRAME = T * 10e-6 / 3
 
 
-def make_window(tmp, rfi_amp, seed=3):
+def make_window(tmp, rfi_amp, seed=3, switch_t=None):
     """4 x 4 grid, 6 channels over 300-400.5 MHz, DM 1 burst (sweep ~20 ms) at
-    (-0.1, 0.25); persistent interferer on channel 2 in a DFT sidelobe."""
+    (-0.1, 0.25); persistent interferer on channel 2 in a DFT sidelobe. With
+    switch_t the interferer jumps to another direction at that time (a state change
+    like MUOS)."""
     rng = np.random.default_rng(seed)
     k = np.arange(N)
     x, y = (k % 4) * 0.6, (k // 4) * 0.6
@@ -51,19 +53,24 @@ def make_window(tmp, rfi_amp, seed=3):
             env = np.exp(-0.5 * ((t - t_arr[c]) / 0.5e-3) ** 2)
             v += 3.0 * env[:, None] * cn(T, 1) * steering_vectors(-0.1, 0.25, f, x, y)
             if c == 2:
-                v += rfi_amp * cn(T, 1) * steering_vectors(0.55, 0.25, f, x, y)
+                late = np.zeros(T, bool) if switch_t is None else t >= switch_t
+                ea = steering_vectors(0.55, 0.25, f, x, y)
+                eb = steering_vectors(0.15, 0.25, f, x, y)
+                v += rfi_amp * cn(T, 1) * np.where(late[:, None], eb, ea)
             V[:, c] = np.clip(np.rint(v.real), -7, 7) + 1j * np.clip(np.rint(v.imag), -7, 7)
         write_baseband(d / f"w_{fi:07d}.bin", V)
         write_astron(tmp / "corr" / f"corr_{fi:07d}.bin", correlate(V))
     return d
 
 
-def run(tmp):
-    out = tmp / "out"
+def run(tmp, *extra, out_name="out", ok=True):
+    out = tmp / out_name
     res = subprocess.run([sys.executable, str(SCRIPT), "--window-dir", str(tmp / "win"),
                           "--corr-dir", str(tmp / "corr"), "--samples", str(T), "--tbin", "8",
-                          "--local-s", "0.01", "--out", str(out)],
+                          "--local-s", "0.01", "--out", str(out), *extra],
                          capture_output=True, text=True)
+    if not ok:
+        return res
     assert res.returncode == 0, res.stderr
     return np.load(out / "waterfall.npz"), res.stdout
 
@@ -87,3 +94,34 @@ def test_waterfall_end_to_end(tmp_path):
     assert loss > 2.0 and rec < 1.3
     # without interference KL and DFT agree
     np.testing.assert_allclose(zb["kl_local_snr_ch"][:-1], zb["dft_snr_ch"][:-1], rtol=0.15)
+
+
+def test_kl_range_before_and_after_a_state_change(tmp_path):
+    """Weights trained before the interferer jumps do not null its new state;
+    weights trained after the jump (off-pulse) do."""
+    make_window(tmp_path, rfi_amp=5.0, switch_t=0.09)
+    before, out = run(tmp_path, "--weights", "dft", "kl_range", "--train-range", "0", "0.09",
+                      "--save-waterfall", out_name="before")
+    after, _ = run(tmp_path, "--weights", "dft", "kl_range", "--train-range", "0.09", "0.16",
+                   "--save-waterfall", out_name="after")
+    assert "kl_range:" in out
+    for key in ("amp", "f_top", "bin_s", "train_range", "kl_range_power", "kl_range_mu_off"):
+        assert key in before
+    assert float(before["amp"]) == 3.0
+    np.testing.assert_allclose(before["train_range"], [0.0, 0.09])
+    # channel 2 (burst near 0.11 s, after the jump)
+    assert after["kl_range_snr_ch"][2] > 2.0 * before["kl_range_snr_ch"][2]
+    assert before["kl_range_snr_ch"][2] < 1.5 * before["dft_snr_ch"][2]
+    # other channels unaffected by the choice of training frames
+    np.testing.assert_allclose(after["kl_range_snr_ch"][:2], before["kl_range_snr_ch"][:2],
+                               rtol=0.2)
+
+
+def test_kl_range_needs_train_range(tmp_path):
+    make_window(tmp_path, rfi_amp=0.0)
+    res = run(tmp_path, "--weights", "kl_range", ok=False)
+    assert res.returncode != 0 and "--train-range" in res.stderr
+    res = run(tmp_path, "--weights", "dft", "--train-range", "0", "0.05", ok=False)
+    assert res.returncode != 0
+    res = run(tmp_path, "--weights", "kl_range", "--train-range", "5", "6", ok=False)
+    assert res.returncode != 0 and "no off-pulse frames" in res.stderr
