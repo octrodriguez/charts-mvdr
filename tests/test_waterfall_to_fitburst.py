@@ -30,7 +30,8 @@ def waterfall(path, seed=1, gap=False):
     t = np.arange(int(0.9 / BIN), int(1.5 / BIN)) * BIN
     ta = T_TOP + K_DM * DM * (f ** -2.0 - f_top ** -2.0)
     P = NOISE * rng.gamma(64, 1 / 64, (t.size, f.size))
-    P += AMP ** 2 * np.exp(-(((t[:, None] - ta) / WIDTH) ** 2))
+    sub = t[:, None] + np.arange(64) * BIN / 64        # sample times in each bin
+    P += AMP ** 2 * np.exp(-(((sub[:, :, None] - ta) / WIDTH) ** 2)).mean(1)
     if gap:
         P[100:110] = np.nan
     flag = np.zeros(f.size, bool)
@@ -53,7 +54,8 @@ def test_export_format_and_expected_values(tmp_path):
     e = side["expected"]
     assert e["dm"] == pytest.approx(DM * K_DM / 4149.377593360996)
     assert e["burst_width"] == pytest.approx(WIDTH / np.sqrt(2))
-    assert e["arrival_time"] == pytest.approx(T_TOP - wf["t_bin"][0])
+    assert e["arrival_time"] == pytest.approx(T_TOP - wf["t_bin"][0] - BIN / 2)
+    assert m["times_bin0"] == pytest.approx(wf["t_bin"][0] + BIN / 2)
     assert e["amplitude"] == pytest.approx(np.log10(AMP ** 2))
     bp = npz["burst_parameters"]
     assert bp["scattering_timescale"] == [0.0] and bp["ref_freq"] == [pytest.approx(400.5)]

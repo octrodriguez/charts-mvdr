@@ -20,7 +20,8 @@ Data written (fitburst generic .npz):
                     ignored by the pipeline)
   metadata          num_freq, num_time, res_time, res_freq, freqs_bin0 (lower edge
                     of the first channel: channel centres are f_k), times_bin0
-                    (window time of the first bin, s), bad_chans, is_dedispersed
+                    (window time of the centre of the first bin, s), bad_chans,
+                    is_dedispersed
   burst_parameters  initial guesses (lists, one component)
 
 Expected values (sidecar "expected"), for the simulator burst model:
@@ -30,8 +31,12 @@ Expected values (sidecar "expected"), for the simulator burst model:
   burst_width    sigma of the intensity profile: the simulator envelope is a
                  Gaussian in amplitude with sigma pulse_width_ms, so the power is a
                  Gaussian with sigma pulse_width_ms / sqrt(2)
-  arrival_time   top-channel arrival, relative to the first exported bin, at
-                 ref_freq = the top frequency of the simulated band
+  arrival_time   top-channel arrival, relative to the centre of the first exported
+                 bin, at ref_freq = the top frequency of the simulated band. fitburst
+                 evaluates its model at times k * res_time; a bin is the mean over
+                 [t_k, t_k + res_time), so the times are bin centres (with bin starts
+                 the fitted arrival is early by half a bin: -2.5 sigma on average for
+                 213 us bins in a synthetic test)
   amplitude      log10(amp^2): peak power of the burst per sample after distortionless
                  weights (w^H d = 1, DFT and MVDR alike); the 4-bit Bussgang gain
                  (g^2 >= 0.99 at the simulator noise levels) and the bin averaging
@@ -155,15 +160,16 @@ def build_export(wf: dict, beam: str, df_mhz=None, perturb: float = 0.1,
     bad = np.ones(n_rows, dtype=bool)
     bad[rows[good]] = False
     t0 = float(t_bin[i0])
+    tc = t0 + bin_s / 2.0                                # time of the first bin centre
     span = (i1 - i0) * bin_s
 
     # Truth for the fitburst model, and initial guesses
     width_i = w_s / math.sqrt(2.0)
-    arrival = t_top - t0
+    arrival = t_top - tc
     expected = {"dm": dm * K_DM / k_fb, "burst_width": width_i, "arrival_time": arrival,
                 "amplitude": math.log10(amp ** 2) if amp > 0 else float("nan"),
                 "spectral_index": 0.0, "spectral_running": 0.0}
-    t_arr = t_top + K_DM * dm * (fmhz ** -2.0 - f_top ** -2.0) - t0
+    t_arr = t_top + K_DM * dm * (fmhz ** -2.0 - f_top ** -2.0) - tc
     idx = np.clip(np.rint(t_arr / bin_s).astype(int), 0, i1 - i0 - 1)
     peak = np.median(D[good, idx[good]])
     initial = {"amplitude": [math.log10(peak) if peak > 0 else 0.0],
@@ -173,7 +179,7 @@ def build_export(wf: dict, beam: str, df_mhz=None, perturb: float = 0.1,
                "ref_freq": [f_top], "scattering_index": [-4.0], "scattering_timescale": [0.0],
                "spectral_index": [0.0], "spectral_running": [0.0]}
     metadata = {"num_freq": n_rows, "num_time": int(i1 - i0), "res_time": bin_s,
-                "res_freq": df, "freqs_bin0": float(fmhz.min() - df / 2.0), "times_bin0": t0,
+                "res_freq": df, "freqs_bin0": float(fmhz.min() - df / 2.0), "times_bin0": tc,
                 "bad_chans": list(np.flatnonzero(bad).astype(int)), "is_dedispersed": False}
 
     n_pre = int(np.floor((arrival - 5.0 * width_i) / bin_s))
