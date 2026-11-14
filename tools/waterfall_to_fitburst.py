@@ -5,8 +5,12 @@ export   writes the binned power of one beam of a 09_beamform_waterfall.py outpu
          (run with --save-waterfall) in the fitburst 'generic' format, plus a
          sidecar <out>.json with the initial guesses and the values fitburst
          should return for the simulated burst
-compare  reads the results_fitburst*.json of fitburst_pipeline.py and the sidecar
-         and prints fit, uncertainty, expected value and pull per parameter
+fit      fits an exported file with the fitburst API (unmodified: DataReader,
+         SpectrumModeler, LSFitter), as fitburst_pipeline.py does without --window,
+         but records the solver status instead of crashing when a fit does not
+         converge, and writes results_fitburst.json in the same layout
+compare  reads a results_fitburst*.json (of fit or of fitburst_pipeline.py) and the
+         sidecar and prints fit, uncertainty, expected value and pull per parameter
 
 Data written (fitburst generic .npz):
   data_full         (n_freq, n_time) = P - mean off-pulse power, per channel, on a
@@ -36,10 +40,20 @@ Expected values (sidecar "expected"), for the simulator burst model:
 Scattering is not simulated: scattering_timescale is 0 (Gaussian profile) and stays
 fixed, as fitburst_pipeline.py does by default.
 
+Initial guesses: DM offset by --dm-perturb (default 1%, the accuracy of a search
+pipeline), width and arrival by --perturb. With a 10% DM offset at DM 30 the model
+starts ~60 ms (40 widths) away from the burst in the lowest channels and the solver
+can stop without converging (seen on high-S/N beams).
+
 fitburst weights each channel by the rms of its data over --weight_range (time-bin
 indices; default: the whole span, burst included, which down-weights the channels
 where the burst is bright): export prints the off-pulse range before the top-channel
 arrival (minus 5 widths) to pass as --weight_range.
+
+The uncertainties come from channel weights measured off-pulse, so they ignore the
+self-noise of the burst (the simulator burst is a Gaussian random waveform: its power
+per bin fluctuates by 1/sqrt(samples per bin)); for bright bursts the pulls are
+inflated (reduced chi^2 > 1 is the sign) and the uncertainties are lower bounds.
 
 Run fitburst_pipeline.py without --window: at fitburst 11a049f the windowed data are
 dedispersed with the initial DM while the model still applies the full dispersion
@@ -49,9 +63,8 @@ arrival + margin).
 
 Example:
   python tools/waterfall_to_fitburst.py export --waterfall OUT/waterfall.npz --beam dft \\
-      --out fit_dft/burst.npz
-  cd fit_dft && python -m fitburst.pipelines.fitburst_pipeline burst.npz --iterations 2 \\
-      --weight_range 0 N         (N as printed by export)
+      --margin-s 0.02 --out fit_dft/burst.npz
+  python tools/waterfall_to_fitburst.py fit --data fit_dft/burst.npz
   python tools/waterfall_to_fitburst.py compare --truth fit_dft/burst.json \\
       --results fit_dft/results_fitburst.json
 """
@@ -107,7 +120,8 @@ def channel_grid(freqs_mhz, df_mhz=None) -> tuple:
 
 
 def build_export(wf: dict, beam: str, df_mhz=None, perturb: float = 0.1,
-                 margin_s: float | None = None, k_fitburst: float | None = None) -> tuple:
+                 margin_s: float | None = None, k_fitburst: float | None = None,
+                 dm_perturb: float = 0.01) -> tuple:
     """(npz dict in fitburst generic format, sidecar dict) for one beam of a waterfall file."""
     key = f"{beam}_power"
     if key not in wf:
@@ -155,7 +169,7 @@ def build_export(wf: dict, beam: str, df_mhz=None, perturb: float = 0.1,
     initial = {"amplitude": [math.log10(peak) if peak > 0 else 0.0],
                "arrival_time": [arrival + perturb * width_i],
                "burst_width": [width_i * (1.0 + perturb)],
-               "dm": [dm * (1.0 + perturb)], "dm_index": [-2.0],
+               "dm": [dm * (1.0 + dm_perturb)], "dm_index": [-2.0],
                "ref_freq": [f_top], "scattering_index": [-4.0], "scattering_timescale": [0.0],
                "spectral_index": [0.0], "spectral_running": [0.0]}
     metadata = {"num_freq": n_rows, "num_time": int(i1 - i0), "res_time": bin_s,
@@ -170,6 +184,64 @@ def build_export(wf: dict, beam: str, df_mhz=None, perturb: float = 0.1,
                "n_rows": n_rows, "bin_s": bin_s, "k_sim": K_DM, "k_fitburst": k_fb}
     npz = {"data_full": data, "metadata": metadata, "burst_parameters": initial}
     return npz, sidecar
+
+
+FIXED_ALWAYS = ("dm_index", "scattering_index", "scattering_timescale")
+
+
+def run_fit(data_path, weight_range=None, iterations: int = 2, fix=()) -> dict:
+    """Fit a fitburst generic .npz with the fitburst API; returns the results dict.
+
+    Same steps as fitburst_pipeline.py (11a049f) without --window, --preprocess or
+    resampling: channels kept where the data row does not sum to zero, weights from
+    the per-channel rms over weight_range, dm_index and the scattering parameters
+    fixed (plus fix), least squares with the exact Jacobian, repeated iterations
+    starting from the previous best fit. A fit that does not converge is reported
+    (success False, solver status and message) instead of raising.
+    """
+    from fitburst.analysis.fitter import LSFitter
+    from fitburst.analysis.model import SpectrumModeler
+    from fitburst.backend.generic import DataReader
+
+    data = DataReader(str(data_path))
+    data.load_data()
+    good = np.sum(data.data_full, axis=1) != 0.0
+    params = {k: list(v) for k, v in data.burst_parameters.items()}
+    model = SpectrumModeler(data.freqs, data.times, num_components=len(params["dm"]),
+                            is_dedispersed=bool(data.is_dedispersed))
+    model.update_parameters(params)
+    history, fitter = [], None
+    for it in range(iterations):
+        fitter = LSFitter(data.data_full, model, good, weighted_fit=True,
+                          weight_range=list(weight_range) if weight_range else None)
+        fitter.fix_parameter(list(FIXED_ALWAYS) + list(fix))
+        fitter.fit(exact_jacobian=True)
+        res = getattr(fitter, "results", None)
+        step = {"iteration": it, "success": bool(res is not None and res.success),
+                "status": None if res is None else int(res.status),
+                "nfev": None if res is None else int(res.nfev),
+                "message": "solver raised" if res is None else str(res.message)}
+        history.append(step)
+        if not step["success"]:
+            break
+        model.update_parameters(fitter.fit_statistics["bestfit_parameters"])
+    ok = bool(history) and history[-1]["success"]
+    out = {"success": ok, "solver": history, "fixed": list(FIXED_ALWAYS) + list(fix),
+           "weight_range": list(weight_range) if weight_range else None,
+           "num_good_freq": int(good.sum()),
+           "initial_parameters": params, "model_parameters": model.get_parameters_dict()}
+    if ok:
+        out["fit_statistics"] = fitter.fit_statistics
+    return out
+
+
+def to_json(obj):
+    """json.dump default for numpy scalars and arrays."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    raise TypeError(f"not JSON serializable: {type(obj)}")
 
 
 def compare(sidecar: dict, results: dict) -> list:
@@ -199,12 +271,24 @@ def main() -> None:
     ex.add_argument("--df-mhz", type=float, default=None,
                     help="channel width (default: smallest spacing of the channels)")
     ex.add_argument("--perturb", type=float, default=0.1,
-                    help="relative offset of the initial DM and width from the truth "
-                         "(arrival offset by perturb x width)")
+                    help="relative offset of the initial width from the truth (arrival "
+                         "offset by perturb x width)")
+    ex.add_argument("--dm-perturb", type=float, default=0.01,
+                    help="relative offset of the initial DM from the truth")
     ex.add_argument("--margin-s", type=float, default=None,
                     help="keep only the bins from the top-channel arrival - margin to the "
                          "bottom-channel arrival + margin (default: all covered bins)")
     ex.add_argument("--out", type=Path, required=True, help="output .npz (sidecar: .json)")
+    fi = sub.add_parser("fit", help="fit an exported file with the fitburst API")
+    fi.add_argument("--data", type=Path, required=True, help=".npz written by export")
+    fi.add_argument("--iterations", type=int, default=2)
+    fi.add_argument("--weight-range", type=int, nargs=2, default=None, metavar=("I0", "I1"),
+                    help="time-bin indices for the channel weights (default: the sidecar "
+                         "weight_range, else the whole span)")
+    fi.add_argument("--fix", nargs="+", default=[],
+                    help="further parameters to keep at their initial values")
+    fi.add_argument("--out", type=Path, default=None,
+                    help="results file (default: results_fitburst.json next to --data)")
     co = sub.add_parser("compare", help="fitburst results vs expected values")
     co.add_argument("--truth", type=Path, required=True, help="sidecar .json of export")
     co.add_argument("--results", type=Path, required=True, help="results_fitburst*.json")
@@ -213,7 +297,8 @@ def main() -> None:
     if args.cmd == "export":
         wf = dict(np.load(args.waterfall, allow_pickle=False))
         try:
-            npz, side = build_export(wf, args.beam, args.df_mhz, args.perturb, args.margin_s)
+            npz, side = build_export(wf, args.beam, args.df_mhz, args.perturb, args.margin_s,
+                                     dm_perturb=args.dm_perturb)
         except ValueError as err:
             raise SystemExit(str(err))
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -227,9 +312,26 @@ def main() -> None:
         wr = side["weight_range"]
         print("fitburst option: " + (f"--weight_range {wr[0]} {wr[1]}" if wr else
                                      "fewer than 10 bins before the burst: no --weight_range"))
+    elif args.cmd == "fit":
+        wr = args.weight_range
+        side_path = args.data.with_suffix(".json")
+        if wr is None and side_path.exists():
+            wr = json.loads(side_path.read_text()).get("weight_range")
+        res = run_fit(args.data, wr, args.iterations, args.fix)
+        out = args.out or args.data.parent / "results_fitburst.json"
+        out.write_text(json.dumps(res, indent=1, default=to_json))
+        for st in res["solver"]:
+            print(f"iteration {st['iteration']}: success {st['success']}, status {st['status']}, "
+                  f"{st['nfev']} evaluations ({st['message']})")
+        print(f"{'fit converged' if res['success'] else 'FIT DID NOT CONVERGE'} -> {out}")
+        if not res["success"]:
+            raise SystemExit(1)
     else:
         side = json.loads(args.truth.read_text())
         res = json.loads(args.results.read_text())
+        if res.get("success") is False:
+            raise SystemExit(f"{args.results}: the fit did not converge "
+                             f"({res['solver'][-1]['message']})")
         print(f"beam {side['beam']}")
         print(f"{'parameter':<18} {'fit':>14} {'+/-':>11} {'expected':>14} {'pull':>7}")
         for p, fit, err, exp, pull in compare(side, res):

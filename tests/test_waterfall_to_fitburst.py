@@ -57,7 +57,8 @@ def test_export_format_and_expected_values(tmp_path):
     assert e["amplitude"] == pytest.approx(np.log10(AMP ** 2))
     bp = npz["burst_parameters"]
     assert bp["scattering_timescale"] == [0.0] and bp["ref_freq"] == [pytest.approx(400.5)]
-    assert bp["dm"][0] == pytest.approx(1.1 * DM)
+    assert bp["dm"][0] == pytest.approx(1.01 * DM)
+    assert bp["burst_width"][0] == pytest.approx(1.1 * WIDTH / np.sqrt(2))
     assert abs(bp["amplitude"][0] - e["amplitude"]) < 0.3      # guess from the data
     n_pre = int(np.floor((e["arrival_time"] - 5 * e["burst_width"]) / BIN))
     assert side["weight_range"] == [0, n_pre]
@@ -94,13 +95,13 @@ def test_fitburst_recovers_the_burst(tmp_path):
                         "--beam", "dft", "--margin-s", "0.02", "--out", str(out)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    side = json.loads(out.with_suffix(".json").read_text())
-    wr = [str(i) for i in side["weight_range"]]
-    r = subprocess.run([sys.executable, "-m", "fitburst.pipelines.fitburst_pipeline", "burst.npz",
-                        "--iterations", "2", "--weight_range", *wr], cwd=out.parent,
+    r = subprocess.run([sys.executable, str(TOOL), "fit", "--data", str(out)],
                        capture_output=True, text=True)
-    assert (out.parent / "results_fitburst.json").exists(), r.stdout[-2000:] + r.stderr[-2000:]
+    assert r.returncode == 0 and "fit converged" in r.stdout, r.stdout + r.stderr
+    side = json.loads(out.with_suffix(".json").read_text())
     res = json.loads((out.parent / "results_fitburst.json").read_text())
+    assert res["success"] and res["weight_range"] == side["weight_range"]
+    assert [st["success"] for st in res["solver"]] == [True, True]
     rows = {p: (fit, err, pull) for p, fit, err, _, pull in wtf.compare(side, res)}
     for p in ("dm", "arrival_time", "burst_width", "amplitude"):
         assert abs(rows[p][2]) < 4, (p, rows[p])
@@ -108,3 +109,21 @@ def test_fitburst_recovers_the_burst(tmp_path):
                         "--results", str(out.parent / "results_fitburst.json")],
                        capture_output=True, text=True)
     assert r.returncode == 0 and "pull" in r.stdout
+
+
+def test_fit_failure_is_reported_not_raised(tmp_path, monkeypatch):
+    pytest.importorskip("fitburst")
+    from fitburst.analysis.fitter import LSFitter
+    wf = dict(np.load(waterfall(tmp_path / "w.npz")))
+    npz, side = wtf.build_export(wf, "dft", margin_s=0.01)
+    np.savez(tmp_path / "b.npz", **npz)
+    monkeypatch.setattr(LSFitter, "fit", lambda self, exact_jacobian=True: None)
+    res = wtf.run_fit(tmp_path / "b.npz", side["weight_range"])
+    assert res["success"] is False and "fit_statistics" not in res
+    assert res["solver"] == [{"iteration": 0, "success": False, "status": None, "nfev": None,
+                              "message": "solver raised"}]
+    (tmp_path / "r.json").write_text(json.dumps(res, default=wtf.to_json))
+    (tmp_path / "b.json").write_text(json.dumps(side))
+    r = subprocess.run([sys.executable, str(TOOL), "compare", "--truth", str(tmp_path / "b.json"),
+                        "--results", str(tmp_path / "r.json")], capture_output=True, text=True)
+    assert r.returncode != 0 and "did not converge" in r.stderr
