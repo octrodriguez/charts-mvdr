@@ -14,7 +14,12 @@ way, channel by channel:
 
 F (or the eigenmodes) comes from the time average of the whole cube (--window 0: the Sun's
 moving fringes average out) or from a running window of +-W frames (as the stage; then the
-Sun enters F and is partly nulled). Outputs:
+Sun enters F and can be partly nulled), recomputed every --update-every frames and held in
+between, as an online system would. With a filter that changes in time the projected noise
+floor Q diag(psi) Q^H changes too; its off-diagonal terms are piecewise constant and lower the
+fringe correlation although the Sun is recovered. With --window > 0 it is subtracted
+(nulling.noise_floor; --no-debias keeps it). --only-bands processes only the channels inside
+--bands (much faster with a running window). Outputs:
   OUT_phase2d.png      phase of one pair relative to the model, raw and filtered, time x
                        frequency (0 = follows the Sun); the default diagnostic
   OUT_correlation.png  fringe correlation per channel, raw and filtered (1 = follows the Sun)
@@ -48,6 +53,11 @@ def parse_args(argv=None):
     ap.add_argument("--k", default="auto", help="project: number of modes or 'auto'.")
     ap.add_argument("--thresh", type=float, default=2.0, help="project --k auto: eigenvalue threshold relative to the smallest (whitened).")
     ap.add_argument("--window", type=int, default=0, help="Half-width in frames of a running window (0 = whole cube).")
+    ap.add_argument("--update-every", type=int, default=1,
+                    help="With --window: frames between filter updates (held in between).")
+    ap.add_argument("--no-debias", action="store_true",
+                    help="With --window: do not subtract the projected noise floor.")
+    ap.add_argument("--only-bands", action="store_true", help="Process only the channels inside --bands.")
     ap.add_argument("--bands", nargs="*", default=[], help="MHz ranges summarized; the last one is drawn as reference.")
     ap.add_argument("--pair", default=None, help="Pair for the 2-D phase figure (default: first two antennas).")
     ap.add_argument("--examples", nargs="*", type=float, default=[], help="Channels [MHz] for time-series examples.")
@@ -64,6 +74,12 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     if args.filter == "project" and args.k != "auto" and not args.k.isdigit():
         print("error: --k must be an integer or 'auto'", file=sys.stderr)
+        return 1
+    if args.update_every < 1:
+        print("error: --update-every must be >= 1", file=sys.stderr)
+        return 1
+    if args.only_bands and not args.bands:
+        print("error: --only-bands needs --bands", file=sys.stderr)
         return 1
     try:
         g, ants, _ = real_io.gains_from_args(args)
@@ -85,20 +101,35 @@ def main(argv=None) -> int:
     ph = np.full((2, n_t, n_c), np.nan)
     ex_ch = [int(np.argmin(np.abs(freqs - f))) for f in args.examples]
     ex = {}
-    for c in np.flatnonzero(ok):
+    use = ok.copy()
+    if args.only_bands:
+        in_band = np.zeros(n_c, dtype=bool)
+        for b in args.bands:
+            lo, hi = rng(b)
+            in_band |= (freqs >= lo) & (freqs <= hi)
+        use &= in_band
+    upd = np.arange(0, n_t, args.update_every) if args.window > 0 else np.array([0])
+    hold = np.searchsorted(upd, np.arange(n_t), side="right") - 1      # last update at or before t
+    debias = args.window > 0 and not args.no_debias
+    for c in np.flatnonzero(use):
         D = Vc[:, c]
         M = nulling.sun_model(look, freqs[c] * 1e6, x, y)
-        F = nulling.local_mean(D, args.window) if args.window > 0 else D.mean(axis=0)[None]
+        F = nulling.local_mean(D, args.window)[upd] if args.window > 0 else D.mean(axis=0)[None]
         if args.filter == "mvdr":
             Q = nulling.mvdr_filter(F, args.loading, args.loading_ref)
+            ku = nulling.whitened_projector(F, thresh=args.thresh)[1] if debias else None
         elif args.k == "auto":
             Q, ku = nulling.whitened_projector(F, thresh=args.thresh)
             k_used[c] = int(np.max(ku))
         else:
             Q, ku = nulling.whitened_projector(F, k=int(args.k))
             k_used[c] = int(np.max(ku))
-        Fd = Q @ D @ np.conj(np.swapaxes(Q, -1, -2))
-        Fm = Q @ M @ np.conj(np.swapaxes(Q, -1, -2))
+        Q = Q[hold]
+        QH = np.conj(np.swapaxes(Q, -1, -2))
+        Fd = Q @ D @ QH
+        if debias:
+            Fd = Fd - Q @ nulling.noise_floor(F, ku)[hold] @ QH
+        Fm = Q @ M @ QH
         rho[0, c] = nulling.fringe_correlation(D, M)
         rho[1, c] = nulling.fringe_correlation(Fd, Fm)
         i, j = pair
@@ -111,10 +142,12 @@ def main(argv=None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     label = (f"MVDR filter, loading {args.loading:g} x {args.loading_ref} eigenvalue" if args.filter == "mvdr"
              else (f"projection, k = {args.k}" + (f" (eigenvalue > {args.thresh:g})" if args.k == "auto" else "")))
-    label += f", window +-{args.window} frames" if args.window > 0 else ", whole cube"
+    label += (f", window +-{args.window} frames, updated every {args.update_every}"
+              + (", noise floor subtracted" if debias else "")) if args.window > 0 else ", whole cube"
     np.savez_compressed(f"{out}.npz", freqs=freqs, rho=rho, k_used=k_used, ants=np.array(ants),
                         filter=args.filter, k=str(args.k), thresh=args.thresh, loading=args.loading,
-                        loading_ref=args.loading_ref, window=args.window)
+                        loading_ref=args.loading_ref, window=args.window, update_every=args.update_every,
+                        debias=debias)
     plot(out, freqs, times, rho, ph, ex, ex_ch, ants, pair, label, args.bands)
     for b in args.bands:
         lo, hi = rng(b)

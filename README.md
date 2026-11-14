@@ -131,7 +131,7 @@ scripts/
   16_rfi_census.py              # real frames: reduced cube (extract) and RFI census crossed with fringe classes (census)
   17_real_nulling.py            # real covariances: DFT vs MVDR towards a tracked look direction, rejection and WNG per channel
   18_kotekan_real_mvdr.py       # chartsMVDRBeams on real correlation frames: window + configs (prepare), check against 17 (compare)
-  19_fringe_recovery.py         # Sun fringe recovery in RFI bands after nulling (MVDR filter or whitened eigenmode projection); 2-D phase vs model
+  19_fringe_recovery.py         # Sun fringe recovery in RFI bands after nulling (MVDR filter or whitened eigenmode projection); 2-D phase vs model; running window with held updates and noise-floor debiasing
   20_nulling_gains.py           # per-antenna power before/after eigenmode nulling (BURSTT-style) and the voltage-domain matrices M = P G^-1
   21_weight_cadence.py          # how often MVDR weights must be recomputed: excess power of stale weights per band and lag
 jobs/
@@ -278,6 +278,10 @@ python scripts/18_kotekan_real_mvdr.py compare --prepared <out_dir> --nulling <o
 # filtered the same way (2-D phase figure by default); per-antenna power and voltage matrices.
 python scripts/19_fringe_recovery.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --positions <positions.npy> --filter mvdr --bands <rfi MHz> <clean MHz> --examples <MHz> --out <prefix>
+# Running-window filter updated every N frames (as an online system); the projected noise
+# floor is subtracted (a time-varying filter otherwise biases the correlation low).
+python scripts/19_fringe_recovery.py --vis <cube.npz> --gains <gains_sun_*.npz> --positions <positions.npy> \
+    --filter project --k auto --window 3 --update-every 6 --bands <rfi MHz> <clean MHz> --only-bands --out <prefix>
 python scripts/20_nulling_gains.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --auto 2 --rfi <MHz ranges> --out <prefix>
 python tools/fig_phase2d_nulling.py --vis <cube.npz> --gains <gains_sun_*.npz> \

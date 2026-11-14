@@ -109,6 +109,25 @@ def _noise_diag(R, k, n_iter=200, tol=1e-10):
     return psi
 
 
+def noise_floor(R, k):
+    """Noise covariance diag(psi) of R (..., n, n) from a rank-k plus diagonal fit (k (...) ints).
+
+    psi is the per-antenna noise power that whitened_projector(whiten="noise") uses; k = 0 gives
+    diag(R). A time-varying filter Q changes the projected noise Q diag(psi) Q^H, whose
+    off-diagonal terms then look like a slowly varying visibility; subtracting it removes that
+    bias from fringe comparisons.
+    """
+    R = np.asarray(R)
+    k = np.broadcast_to(np.asarray(k, dtype=int), R.shape[:-2])
+    flat_R = R.reshape((-1,) + R.shape[-2:])
+    flat_k = k.reshape(-1)
+    out = np.zeros_like(flat_R)
+    for i, (r, kk) in enumerate(zip(flat_R, flat_k)):
+        psi = _noise_diag(r, int(kk)) if kk > 0 else np.real(np.diag(r))
+        out[i] = np.diag(psi)
+    return out.reshape(R.shape)
+
+
 def whitened_projector(R, k=None, thresh=None, whiten="noise", kmax=None):
     """Projector removing interference eigenmodes of a Hermitian covariance R (n, n) or (..., n, n).
 
