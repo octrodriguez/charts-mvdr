@@ -108,6 +108,7 @@ charts_mvdr/                    # importable package (pip install -e .)
   rfi_census.py                 # RFI census of autocorrelations: spectral peaks, occupancy, classes, fringe crossing
   tracking.py                   # stage rules with a moving look direction on real covariances; gain interpolation, sidecar
   real_io.py                    # cubes and gains files of both charts-utils generations, converted on load; shared --gains options
+  cadence.py                    # stale MVDR weights: excess output power versus weight age, per band
   stage_reference.py            # NumPy reference of the Kotekan MVDR stage (blind local covariance window, gains)
   sim_cpu.py                    # CPU tier: analytic covariance, voltage simulation
 scripts/
@@ -132,6 +133,7 @@ scripts/
   18_kotekan_real_mvdr.py       # chartsMVDRBeams on real correlation frames: window + configs (prepare), check against 17 (compare)
   19_fringe_recovery.py         # Sun fringe recovery in RFI bands after nulling (MVDR filter or whitened eigenmode projection); 2-D phase vs model
   20_nulling_gains.py           # per-antenna power before/after eigenmode nulling (BURSTT-style) and the voltage-domain matrices M = P G^-1
+  21_weight_cadence.py          # how often MVDR weights must be recomputed: excess power of stale weights per band and lag
 jobs/
   validate_mvdr.sh              # Slurm: 03_validate_mvdr sweeps (CPU node)
   build_kotekan.sh              # Slurm: build Kotekan with CUDA (GPU node)
@@ -280,6 +282,12 @@ python scripts/20_nulling_gains.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --auto 2 --rfi <MHz ranges> --out <prefix>
 python tools/fig_phase2d_nulling.py --vis <cube.npz> --gains <gains_sun_*.npz> \
     --pairs <a,b> --zoom <MHz> --null-bands <MHz> --demean --out <png>
+
+# How often must MVDR weights be recomputed? Weights trained on --n-avg frames, applied k
+# frames later, against fresh weights (same constraint): excess output power per band and lag,
+# for a fixed look direction. Extract the cube with --stride 1 so lags start at one frame.
+python scripts/21_weight_cadence.py --vis <cube.npz> --gains <gains_sun_*.npz> \
+    --bands <MHz ranges> --out <prefix>
 
 # Figures from the Kotekan stage: beam response of the applied weights (07 --stage-npz, then
 # tools/fig_beam_response.py) and waterfalls of a paired FRB window (15)
